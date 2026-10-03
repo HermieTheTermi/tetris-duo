@@ -13,31 +13,39 @@ import {
   boardMatrix,
   incomingGarbage,
   applyGarbage,
+  matchWinner,
 } from './engine.js';
 
-import { createHost, createGuest } from './net.js';
+import { createHost, createGuest, sanitizeCode } from './net.js';
 import { setupCanvas, renderBoard, renderPiecePreview, bindKeyboard } from './ui.js';
 
-// DOM Elements
+// DOM Elements: Navigation & Modes
 const btnModeLocal = document.getElementById('btnModeLocal');
 const btnModeHost = document.getElementById('btnModeHost');
 const btnModeGuest = document.getElementById('btnModeGuest');
 
+// Signaling: Host
 const hostSignaling = document.getElementById('hostSignaling');
-const guestSignaling = document.getElementById('guestSignaling');
 const hostOfferCode = document.getElementById('hostOfferCode');
 const hostAnswerInput = document.getElementById('hostAnswerInput');
 const btnCopyOffer = document.getElementById('btnCopyOffer');
+const btnShareOffer = document.getElementById('btnShareOffer');
+const btnPasteAnswer = document.getElementById('btnPasteAnswer');
 const btnAcceptAnswer = document.getElementById('btnAcceptAnswer');
 const hostStatus = document.getElementById('hostStatus');
 
+// Signaling: Guest
+const guestSignaling = document.getElementById('guestSignaling');
 const guestOfferInput = document.getElementById('guestOfferInput');
+const btnPasteOffer = document.getElementById('btnPasteOffer');
 const btnGenerateAnswer = document.getElementById('btnGenerateAnswer');
 const guestAnswerStep = document.getElementById('guestAnswerStep');
 const guestAnswerCode = document.getElementById('guestAnswerCode');
+const btnShareAnswer = document.getElementById('btnShareAnswer');
 const btnCopyAnswer = document.getElementById('btnCopyAnswer');
 const guestStatus = document.getElementById('guestStatus');
 
+// Player Panels Header & Stats
 const nameP1 = document.getElementById('nameP1');
 const nameP2 = document.getElementById('nameP2');
 const badgeP1 = document.getElementById('badgeP1');
@@ -51,8 +59,14 @@ const scoreP2 = document.getElementById('scoreP2');
 const linesP2 = document.getElementById('linesP2');
 const levelP2 = document.getElementById('levelP2');
 
+// Rematch & Toast & Overlay
 const btnRematch = document.getElementById('btnRematch');
 const toast = document.getElementById('toast');
+
+const matchOverlay = document.getElementById('matchOverlay');
+const matchVerdict = document.getElementById('matchVerdict');
+const matchScore = document.getElementById('matchScore');
+const btnOverlayRematch = document.getElementById('btnOverlayRematch');
 
 // Canvases
 const boardP1 = document.getElementById('boardP1');
@@ -89,13 +103,32 @@ let lastTime = 0;
 let lastBroadcast = 0;
 let gameSeed = 100;
 
+// Match End State: 0 = running, 1 = P1 wins, 2 = P2 wins
+let currentMatchWinner = 0;
+
 // Remote guest streamed state (when playing as Guest)
 let remoteGuestState = null;
 
 function showToast(msg) {
+  if (!toast) return;
   toast.textContent = msg;
   toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 2000);
+  setTimeout(() => toast.classList.remove('show'), 2200);
+}
+
+function showMatchEnd(verdict, loserScoreVal, isLoser = false) {
+  if (!matchOverlay || !matchVerdict || !matchScore) return;
+  matchVerdict.textContent = verdict;
+  matchVerdict.classList.toggle('loser', isLoser);
+  matchScore.textContent = `Loser Final Score: ${loserScoreVal}`;
+  matchOverlay.classList.remove('hidden');
+}
+
+function hideMatchEnd() {
+  currentMatchWinner = 0;
+  if (matchOverlay) {
+    matchOverlay.classList.add('hidden');
+  }
 }
 
 function initLocalGame() {
@@ -108,14 +141,18 @@ function initLocalGame() {
   badgeP1.className = 'status-badge';
   badgeP2.textContent = 'Playing';
   badgeP2.className = 'status-badge';
+  hideMatchEnd();
 }
 
 function handleInput(player, action) {
+  // If match has concluded, no board accepts inputs anymore
+  if (currentMatchWinner !== 0) return;
+
   if (currentMode === 'local') {
     const targetState = player === 1 ? state1 : state2;
     applyActionToState(targetState, action);
   } else if (currentMode === 'host') {
-    // In host mode, host player controls state1 using either P1 or P2 keys
+    // In host mode, host player controls state1 using touch or keys
     applyActionToState(state1, action);
   } else if (currentMode === 'guest') {
     // In guest mode, send input action to host
@@ -126,7 +163,7 @@ function handleInput(player, action) {
 }
 
 function applyActionToState(st, action) {
-  if (!st || st.over) return;
+  if (!st || st.over || currentMatchWinner !== 0) return;
   switch (action) {
     case 'left':
       move(st, -1);
@@ -203,6 +240,8 @@ async function setMode(mode) {
   hostSignaling.classList.add('hidden');
   guestSignaling.classList.add('hidden');
 
+  hideMatchEnd();
+
   if (peer) {
     peer.close();
     peer = null;
@@ -229,6 +268,7 @@ async function initHostMode() {
   gameSeed += 10;
   state1 = createState(gameSeed);
   state2 = createState(gameSeed + 1);
+  hideMatchEnd();
 
   try {
     peer = await createHost({
@@ -245,6 +285,10 @@ async function initHostMode() {
         hostStatus.className = 'status-badge waiting';
         badgeP2.textContent = 'Disconnected';
       },
+      onTimeout: () => {
+        hostStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+        hostStatus.className = 'status-badge waiting';
+      },
       onMessage: (msg) => {
         handleHostMessage(msg);
       },
@@ -252,7 +296,7 @@ async function initHostMode() {
 
     const offerBlob = peer.localBlob();
     hostOfferCode.value = offerBlob;
-    hostStatus.textContent = 'Offer ready. Copy and send to Guest!';
+    hostStatus.textContent = 'Offer ready. Copy or share with Guest!';
   } catch (err) {
     hostStatus.textContent = 'Error: ' + err.message;
   }
@@ -269,22 +313,43 @@ function handleHostMessage(msg) {
     }
   } else if (msg.t === 'rematch') {
     resetMatch();
+    if (peer) peer.send({ t: 'rematch' });
+    showToast('Rematch started!');
   }
 }
 
 btnCopyOffer.addEventListener('click', () => {
-  navigator.clipboard.writeText(hostOfferCode.value);
-  showToast('Host offer copied to clipboard!');
+  const code = sanitizeCode(hostOfferCode.value);
+  if (code) {
+    navigator.clipboard.writeText(code);
+    showToast('Host offer copied to clipboard!');
+  }
+});
+
+btnShareOffer.addEventListener('click', () => {
+  shareCode(hostOfferCode.value);
+});
+
+btnPasteAnswer.addEventListener('click', () => {
+  pasteCodeInto(hostAnswerInput);
 });
 
 btnAcceptAnswer.addEventListener('click', async () => {
-  const answer = hostAnswerInput.value.trim();
+  const answer = sanitizeCode(hostAnswerInput.value);
   if (!answer) {
     alert('Please paste the Guest answer code first.');
     return;
   }
   try {
     hostStatus.textContent = 'Connecting...';
+    hostStatus.className = 'status-badge waiting';
+
+    // 15 second timeout for DataChannel connection
+    peer.startTimeout(() => {
+      hostStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+      hostStatus.className = 'status-badge waiting';
+    }, 15000);
+
     await peer.acceptBlob(answer);
   } catch (err) {
     hostStatus.textContent = 'Connection failed: ' + err.message;
@@ -303,15 +368,21 @@ function initGuestMode() {
   state1 = null;
   state2 = null;
   remoteGuestState = null;
+  hideMatchEnd();
 }
 
+btnPasteOffer.addEventListener('click', () => {
+  pasteCodeInto(guestOfferInput);
+});
+
 btnGenerateAnswer.addEventListener('click', async () => {
-  const offer = guestOfferInput.value.trim();
+  const offer = sanitizeCode(guestOfferInput.value);
   if (!offer) {
     alert('Please paste the Host connection code first.');
     return;
   }
   guestStatus.textContent = 'Generating answer...';
+  guestStatus.className = 'status-badge waiting';
   try {
     peer = await createGuest({
       onOpen: () => {
@@ -326,40 +397,119 @@ btnGenerateAnswer.addEventListener('click', async () => {
         guestStatus.textContent = 'Disconnected from Host.';
         guestStatus.className = 'status-badge waiting';
       },
+      onTimeout: () => {
+        guestStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+        guestStatus.className = 'status-badge waiting';
+      },
       onMessage: (msg) => {
         handleGuestMessage(msg);
       },
     });
 
+    // 15 second timeout for DataChannel connection
+    peer.startTimeout(() => {
+      guestStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+      guestStatus.className = 'status-badge waiting';
+    }, 15000);
+
     await peer.acceptBlob(offer);
     const answerBlob = peer.localBlob();
     guestAnswerCode.value = answerBlob;
     guestAnswerStep.classList.remove('hidden');
-    guestStatus.textContent = 'Answer generated. Copy and send back to Host!';
+    guestStatus.textContent = 'Answer generated. Copy or share back to Host!';
   } catch (err) {
     guestStatus.textContent = 'Error: ' + err.message;
   }
 });
 
 btnCopyAnswer.addEventListener('click', () => {
-  navigator.clipboard.writeText(guestAnswerCode.value);
-  showToast('Guest answer copied to clipboard!');
+  const code = sanitizeCode(guestAnswerCode.value);
+  if (code) {
+    navigator.clipboard.writeText(code);
+    showToast('Guest answer copied to clipboard!');
+  }
 });
+
+btnShareAnswer.addEventListener('click', () => {
+  shareCode(guestAnswerCode.value);
+});
+
+async function shareCode(rawCode) {
+  const clean = sanitizeCode(rawCode);
+  if (!clean) {
+    showToast('Kein Code vorhanden');
+    return;
+  }
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title: 'Tetris Duo Code',
+        text: clean,
+      });
+      showToast('Code geteilt!');
+      return;
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      // Fallback to clipboard if share was rejected
+    }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(clean);
+      showToast('In die Zwischenablage kopiert!');
+      return;
+    } catch (err) {
+      // Fallback below
+    }
+  }
+  showToast('Bitte manuell kopieren');
+}
+
+async function pasteCodeInto(targetInput) {
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      showToast('Zwischenablage nicht verfügbar – bitte manuell einfügen');
+      return;
+    }
+    const text = await navigator.clipboard.readText();
+    const clean = sanitizeCode(text);
+    if (!clean) {
+      showToast('Zwischenablage ist leer');
+      return;
+    }
+    targetInput.value = clean;
+    showToast('Code eingefügt!');
+  } catch (err) {
+    showToast('Einfügen fehlgeschlagen – bitte manuell einfügen');
+  }
+}
 
 function handleGuestMessage(msg) {
   if (!msg || !msg.t) return;
   if (msg.t === 'state') {
     // Receive state stream from host
     remoteGuestState = msg;
+
+    // Check match end from streamed host state
+    if (msg.winner && currentMatchWinner === 0) {
+      currentMatchWinner = msg.winner;
+      const isWinner = msg.winner === 2; // In Host sim, state2 is Guest
+      showMatchEnd(
+        isWinner ? 'You win 🏆' : 'You lose',
+        msg.loserScore ?? 0,
+        !isWinner
+      );
+    }
   } else if (msg.t === 'garbage') {
     showToast(`Incoming Garbage: +${msg.n} lines!`);
   } else if (msg.t === 'rematch') {
-    showToast('Host initiated rematch!');
+    hideMatchEnd();
+    showToast('Rematch gestartet!');
   }
 }
 
 // Rematch Button
-btnRematch.addEventListener('click', () => {
+function triggerRematch() {
   if (currentMode === 'local') {
     initLocalGame();
     showToast('Game restarted!');
@@ -371,14 +521,82 @@ btnRematch.addEventListener('click', () => {
     if (peer) peer.send({ t: 'rematch' });
     showToast('Rematch requested!');
   }
-});
+}
+
+btnRematch.addEventListener('click', triggerRematch);
+if (btnOverlayRematch) {
+  btnOverlayRematch.addEventListener('click', triggerRematch);
+}
 
 function resetMatch() {
   gameSeed += 10;
   state1 = createState(gameSeed);
   state2 = createState(gameSeed + 1);
   badgeP1.textContent = 'Playing';
+  badgeP1.className = 'status-badge';
   badgeP2.textContent = 'Playing';
+  badgeP2.className = 'status-badge';
+  hideMatchEnd();
+}
+
+// Touch Controls Setup
+function setupTouchControls() {
+  const touchMap = [
+    { id: 'btnLeft', action: 'left', repeat: true, arr: 40 },
+    { id: 'btnRight', action: 'right', repeat: true, arr: 40 },
+    { id: 'btnRotCW', action: 'rotCW', repeat: false },
+    { id: 'btnRotCCW', action: 'rotCCW', repeat: false },
+    { id: 'btnSoftDrop', action: 'softDrop', repeat: true, arr: 35 },
+    { id: 'btnHardDrop', action: 'hardDrop', repeat: false },
+    { id: 'btnHold', action: 'hold', repeat: false },
+  ];
+
+  touchMap.forEach(({ id, action, repeat, arr }) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+
+    let dasTimer = null;
+    let repeatTimer = null;
+    let isPressed = false;
+
+    const stopRepeat = () => {
+      if (!isPressed) return;
+      isPressed = false;
+      btn.classList.remove('pressed');
+      if (dasTimer) clearTimeout(dasTimer);
+      if (repeatTimer) clearInterval(repeatTimer);
+      dasTimer = null;
+      repeatTimer = null;
+    };
+
+    const startAction = (e) => {
+      e.preventDefault();
+      if (isPressed || currentMatchWinner !== 0) return;
+      isPressed = true;
+      btn.classList.add('pressed');
+
+      // Player 1 input: host drives own board; guest sends over wire; local drives P1
+      handleInput(1, action);
+
+      if (repeat) {
+        dasTimer = setTimeout(() => {
+          repeatTimer = setInterval(() => {
+            if (isPressed && currentMatchWinner === 0) {
+              handleInput(1, action);
+            } else {
+              stopRepeat();
+            }
+          }, arr || 40);
+        }, 160);
+      }
+    };
+
+    btn.addEventListener('pointerdown', startAction);
+    btn.addEventListener('pointerup', stopRepeat);
+    btn.addEventListener('pointercancel', stopRepeat);
+    btn.addEventListener('pointerleave', stopRepeat);
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  });
 }
 
 // Game Loop
@@ -388,41 +606,65 @@ function loop(timestamp) {
   lastTime = timestamp;
 
   if (currentMode === 'local') {
-    if (state1 && !state1.over) {
-      const ev1 = tick(state1, dt);
-      for (const ev of ev1) {
-        if (ev.type === 'clear' && ev.attack > 0) {
-          incomingGarbage(state2, ev.attack);
+    if (currentMatchWinner === 0) {
+      if (state1 && !state1.over) {
+        const ev1 = tick(state1, dt);
+        for (const ev of ev1) {
+          if (ev.type === 'clear' && ev.attack > 0) {
+            incomingGarbage(state2, ev.attack);
+          }
         }
       }
-    }
-    if (state2 && !state2.over) {
-      const ev2 = tick(state2, dt);
-      for (const ev of ev2) {
-        if (ev.type === 'clear' && ev.attack > 0) {
-          incomingGarbage(state1, ev.attack);
+      if (state2 && !state2.over) {
+        const ev2 = tick(state2, dt);
+        for (const ev of ev2) {
+          if (ev.type === 'clear' && ev.attack > 0) {
+            incomingGarbage(state1, ev.attack);
+          }
         }
+      }
+
+      // Check match end
+      const winner = matchWinner(state1, state2);
+      if (winner !== 0) {
+        currentMatchWinner = winner;
+        const loserScore = winner === 1 ? state2.score : state1.score;
+        showMatchEnd(winner === 1 ? 'Player 1 wins 🏆' : 'Player 2 wins 🏆', loserScore, false);
       }
     }
 
     renderLocalUI();
   } else if (currentMode === 'host') {
-    if (state1 && !state1.over) {
-      const ev1 = tick(state1, dt);
-      for (const ev of ev1) {
-        if (ev.type === 'clear' && ev.attack > 0) {
-          incomingGarbage(state2, ev.attack);
-          if (peer) peer.send({ t: 'garbage', n: ev.attack });
+    if (currentMatchWinner === 0) {
+      if (state1 && !state1.over) {
+        const ev1 = tick(state1, dt);
+        for (const ev of ev1) {
+          if (ev.type === 'clear' && ev.attack > 0) {
+            incomingGarbage(state2, ev.attack);
+            if (peer) peer.send({ t: 'garbage', n: ev.attack });
+          }
         }
       }
-    }
-    if (state2 && !state2.over) {
-      const ev2 = tick(state2, dt);
-      for (const ev of ev2) {
-        if (ev.type === 'clear' && ev.attack > 0) {
-          incomingGarbage(state1, ev.attack);
-          if (peer) peer.send({ t: 'garbage', n: ev.attack });
+      if (state2 && !state2.over) {
+        const ev2 = tick(state2, dt);
+        for (const ev of ev2) {
+          if (ev.type === 'clear' && ev.attack > 0) {
+            incomingGarbage(state1, ev.attack);
+            if (peer) peer.send({ t: 'garbage', n: ev.attack });
+          }
         }
+      }
+
+      // Check match end
+      const winner = matchWinner(state1, state2);
+      if (winner !== 0) {
+        currentMatchWinner = winner;
+        const loserScore = winner === 1 ? state2.score : state1.score;
+        showMatchEnd(
+          winner === 1 ? 'You win 🏆' : 'You lose',
+          loserScore,
+          winner !== 1
+        );
       }
     }
 
@@ -449,6 +691,10 @@ function loop(timestamp) {
         oppLevel: state1.level,
         oppQueued: state1.queuedGarbage,
         oppOver: state1.over,
+
+        // Match end verdict
+        winner: currentMatchWinner,
+        loserScore: currentMatchWinner === 1 ? state2.score : state1.score,
       });
     }
 
@@ -559,6 +805,9 @@ function renderGuestUI() {
 bindKeyboard((player, action) => {
   handleInput(player, action);
 });
+
+// Initialize Touch Controls
+setupTouchControls();
 
 // Start with Local Game
 initLocalGame();

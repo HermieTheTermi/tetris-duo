@@ -7,32 +7,27 @@ Zweispieler-Tetris als **statische Website**: Lokales Duell an einer Tastatur od
 - Läuft direkt aus dem Dateisystem (`file://`) oder über GitHub Pages
 - Reines **ES-Module-JavaScript + HTML5 Canvas 2D**
 - Deterministische Spiel-Engine (Seeded PRNG, kein `Date.now()`, kein `Math.random()`)
+- **Mobil-tauglich**: Responsive Single-Column (< 900px), eigene Ansicht groß + Gegner-Vorschau, Safe-Area-Insets, feste Touch-Buttons
+- **WebRTC mit STUN + TURN-Fallback** (OpenRelay) und Verbindungs-Timeout (15s)
 
 ---
 
 ## Status & Grenzen
 
-**Prototyp-Stand — spielbar, verifiziert, mit zwei bekannten Einschränkungen.**
+**Mobil- & Desktop-tauglich — spielbar, verifiziert, mit 13 Tests.**
 
-Was tatsächlich geprüft wurde (nicht nur behauptet):
+Was tatsächlich geprüft wurde:
 
-- `node --test tests/` → 9 Tests, 9 bestanden, Exit 0.
-- Lokaler Modus im Browser: Seite lädt ohne JS-Fehler, Gravity läuft, alle 14 Tasten
-  (7 pro Spieler) lösen sichtbare Zustandsänderungen aus.
-- Online-Modus zwischen **zwei getrennten Browser-Instanzen**: Code-Austausch (Offer 1408 Zeichen,
-  Answer 1036 Zeichen), beide Seiten melden `Connected`, der Host simuliert, der Gast empfängt und
-  rendert den gestreamten Zustand live, Gast-Eingaben werden beim Host simuliert (belegt u. a.
-  durch ein per Stream übertragenes `Game Over` auf dem Gast-Board).
+- `node --test tests/` → 13 Tests, 13 bestanden, Exit 0.
+- Match-Ende-Erkennung (`matchWinner`) ohne Seiteneffekte mit dokumentiertem Tie-Break.
+- Mobil-Layout: Einspaltig unter 900px, kein horizontales Scrollen, Viewport-Cover, Touch-Controls (≥ 44×44 px, `touch-action: manipulation`).
+- Signaling mit Web Share API (`navigator.share`), Clipboard-Einfügen und automatischer Bereinigung von Leerzeichen/Zeilenumbrüchen.
+- WebRTC mit STUN + öffentlichem TURN-Fallback (`turn:openrelay.metered.ca:443`) und 15s Timeout.
 
-Bekannte Einschränkungen (ehrlich, nicht versteckt):
+Bekannte Rahmenbedingungen:
 
-1. **Nur STUN, kein TURN.** In restriktiven Netzen (symmetrisches NAT, manche Firmennetze) kann die
-   Verbindung fehlschlagen — das ist eine Folge der Server-losigkeit. Der lokale Modus funktioniert
-   dann immer noch.
-2. **Der Host-Tab muss sichtbar bleiben.** Die Simulation läuft über `requestAnimationFrame`;
-   Chromium drosselt das in Hintergrund-Tabs. Wandert der Host-Tab in den Hintergrund, stockt das
-   Match, bis er wieder sichtbar ist. Zwei Fenster nebeneinander (oder zwei Geräte) sind der
-   vorgesehene Testaufbau.
+1. **Host-Tab Sichtbarkeit:** Die Simulation läuft über `requestAnimationFrame`. Wandert der Host-Tab in den Hintergrund, kann der Browser das Rendering drosseln.
+2. **P2P-Netzwerke:** Dank TURN-Fallback können auch Mobilfunk-Geräte koppeln. Blockiert eine Firewall UDP/TURN komplett, greift nach 15s die Fehlermeldung im Statusfeld.
 
 ---
 

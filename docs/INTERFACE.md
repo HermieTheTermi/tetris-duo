@@ -80,3 +80,35 @@ not required.
 - `local` — two boards side by side on one keyboard, independent games, no network
 - `host` / `guest` — online 1v1, manual code exchange; guest sends inputs, host owns the simulation
   and streams state; garbage flows both ways; rematch button
+
+## Mobile (phones, two players on separate devices)
+
+- Responsive, **mobile-first**: below 900 px viewport width the layout collapses to a single column
+  — the player's **own board large, the opponent's board small (scaled preview)** — and nothing may
+  overflow horizontally. Desktop keeps the two-board side-by-side arena.
+- `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`,
+  `touch-action: manipulation` on the control buttons (no double-tap zoom), safe-area insets
+  respected (`env(safe-area-inset-bottom)`).
+- **Touch controls** as fixed bottom buttons, tap target ≥ 44×44 px, pointer events (not just click),
+  with visual pressed feedback: `←`, `→`, `⟳` (rotCW), `⟲` (rotCCW), `↓` (softDrop), `⇓` (hardDrop),
+  `HOLD`. Each dispatches exactly the same action as its keyboard equivalent. Keys keep working.
+- **Host/touch split on phones:** in the online modes the *host* drives its own board with the
+  touch controls; the *guest* sends its inputs over the wire (unchanged protocol).
+- Signaling must be thumb-friendly: **"'Code teilen' via `navigator.share`** with a clipboard
+  fallback, and a **"Einfügen"** button that reads `navigator.clipboard.readText()`; pasted codes are
+  sanitized (all whitespace/newlines stripped) before use. Every code step is a single tap.
+- Connectivity: `iceServers` = STUN **plus a public TURN fallback** (e.g.
+  `turn:openrelay.metered.ca:443`, both `turn:` and `turns:`), so two phones on mobile networks can
+  connect; if TURN is unreachable the game must still work on STUN-only paths and say so instead of
+  hanging. ICE gathering timeout with a clear error message after ~15 s.
+
+## Match end — "bis einer verliert"
+
+- The match is over as soon as **one** player tops out. Both sides must show the same verdict:
+  `You win 🏆` / `You lose`, plus the loser's final score, and a `Rematch` button that resets both
+  boards for both players over the wire (works in `local`, `host` and `guest`).
+- Engine API (add, keep everything else stable):
+  `export function matchWinner(stateA, stateB) // -> 1 | 2 | 0 (0 = running)`.
+- The dying player's board freezes; the winner's board stops accepting input too (match decided).
+- Unit tests must cover: running match → 0, A over → 2, B over → 1, both over → 1 (first one wins /
+  documented tie-break), and that `matchWinner` has no side effects.

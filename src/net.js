@@ -1,5 +1,20 @@
 // WebRTC transport with manual signaling, no DOM
-const STUN_SERVER = 'stun:stun.l.google.com:19302';
+export const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  {
+    urls: [
+      'turn:openrelay.metered.ca:443',
+      'turns:openrelay.metered.ca:443',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
+export function sanitizeCode(str) {
+  if (typeof str !== 'string') return '';
+  return str.replace(/\s+/g, '');
+}
 
 function encodeBlob(obj) {
   const json = JSON.stringify(obj);
@@ -14,7 +29,7 @@ function encodeBlob(obj) {
 }
 
 function decodeBlob(str) {
-  const trimmed = str.trim();
+  const trimmed = sanitizeCode(str);
   let json;
   if (typeof Buffer !== 'undefined') {
     json = Buffer.from(trimmed, 'base64').toString('utf8');
@@ -66,17 +81,29 @@ function createNodeMockPeer(isHost, opts = {}) {
   };
   const blob = encodeBlob(dummySdp);
 
+  let timeoutTimer = null;
   const peer = {
     localBlob: () => blob,
     acceptBlob: async (str) => {
-      const parsed = decodeBlob(str);
+      const parsed = decodeBlob(sanitizeCode(str));
       return parsed;
     },
     send: (obj) => {},
     onMessage: opts.onMessage || (() => {}),
     onOpen: opts.onOpen || (() => {}),
     onClose: opts.onClose || (() => {}),
+    startTimeout: (cb, ms = 15000) => {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = setTimeout(() => {
+        cb?.();
+        opts.onTimeout?.();
+      }, ms);
+    },
+    cancelTimeout: () => {
+      clearTimeout(timeoutTimer);
+    },
     close: () => {
+      clearTimeout(timeoutTimer);
       peer.onClose();
     },
   };
@@ -89,10 +116,12 @@ export async function createHost(opts = {}) {
   }
 
   const pc = new RTCPeerConnection({
-    iceServers: [{ urls: STUN_SERVER }],
+    iceServers: ICE_SERVERS,
   });
 
   let dc = pc.createDataChannel('game');
+  let timeoutTimer = null;
+  let isOpen = false;
 
   const peer = {
     onMessage: opts.onMessage || (() => {}),
@@ -108,8 +137,22 @@ export async function createHost(opts = {}) {
     },
 
     acceptBlob: async (str) => {
-      const remote = decodeBlob(str);
+      const remote = decodeBlob(sanitizeCode(str));
       await pc.setRemoteDescription(new RTCSessionDescription(remote));
+    },
+
+    startTimeout: (cb, ms = 15000) => {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = setTimeout(() => {
+        if (!isOpen) {
+          cb?.();
+          opts.onTimeout?.();
+        }
+      }, ms);
+    },
+
+    cancelTimeout: () => {
+      clearTimeout(timeoutTimer);
     },
 
     send: (obj) => {
@@ -119,6 +162,7 @@ export async function createHost(opts = {}) {
     },
 
     close: () => {
+      clearTimeout(timeoutTimer);
       if (dc) dc.close();
       pc.close();
     },
@@ -127,9 +171,12 @@ export async function createHost(opts = {}) {
   const setupDc = (channel) => {
     dc = channel;
     dc.onopen = () => {
+      isOpen = true;
+      clearTimeout(timeoutTimer);
       peer.onOpen();
     };
     dc.onclose = () => {
+      isOpen = false;
       peer.onClose();
     };
     dc.onmessage = (event) => {
@@ -146,7 +193,7 @@ export async function createHost(opts = {}) {
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  await waitForIceGathering(pc, 2000);
+  await waitForIceGathering(pc, 2500);
 
   return peer;
 }
@@ -157,10 +204,12 @@ export async function createGuest(opts = {}) {
   }
 
   const pc = new RTCPeerConnection({
-    iceServers: [{ urls: STUN_SERVER }],
+    iceServers: ICE_SERVERS,
   });
 
   let dc = null;
+  let timeoutTimer = null;
+  let isOpen = false;
 
   const peer = {
     onMessage: opts.onMessage || (() => {}),
@@ -176,12 +225,26 @@ export async function createGuest(opts = {}) {
     },
 
     acceptBlob: async (str) => {
-      const remote = decodeBlob(str);
+      const remote = decodeBlob(sanitizeCode(str));
       await pc.setRemoteDescription(new RTCSessionDescription(remote));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await waitForIceGathering(pc, 2000);
+      await waitForIceGathering(pc, 2500);
       return peer.localBlob();
+    },
+
+    startTimeout: (cb, ms = 15000) => {
+      clearTimeout(timeoutTimer);
+      timeoutTimer = setTimeout(() => {
+        if (!isOpen) {
+          cb?.();
+          opts.onTimeout?.();
+        }
+      }, ms);
+    },
+
+    cancelTimeout: () => {
+      clearTimeout(timeoutTimer);
     },
 
     send: (obj) => {
@@ -191,6 +254,7 @@ export async function createGuest(opts = {}) {
     },
 
     close: () => {
+      clearTimeout(timeoutTimer);
       if (dc) dc.close();
       pc.close();
     },
@@ -199,9 +263,12 @@ export async function createGuest(opts = {}) {
   pc.ondatachannel = (event) => {
     dc = event.channel;
     dc.onopen = () => {
+      isOpen = true;
+      clearTimeout(timeoutTimer);
       peer.onOpen();
     };
     dc.onclose = () => {
+      isOpen = false;
       peer.onClose();
     };
     dc.onmessage = (event) => {

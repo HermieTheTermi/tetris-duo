@@ -397,3 +397,39 @@ export function tick(state, dtMs) {
 
   return events;
 }
+
+/**
+ * Determines match winner between stateA and stateB.
+ * Returns:
+ *   0: Match still running (neither is over)
+ *   1: Player 1 wins (Player 2 over)
+ *   2: Player 2 wins (Player 1 over)
+ *
+ * Tie-break:
+ *   If both are over, the player whose board topped out first lost (the other wins).
+ *   If indistinguishable, documented tie-break defaults to 1 (Player 1 wins).
+ *
+ * Pure function with no side effects.
+ */
+export function matchWinner(stateA, stateB) {
+  if (!stateA || !stateB) return 0;
+  const aOver = Boolean(stateA.over);
+  const bOver = Boolean(stateB.over);
+
+  if (!aOver && !bOver) {
+    return 0;
+  }
+  if (aOver && !bOver) {
+    return 2;
+  }
+  if (!aOver && bOver) {
+    return 1;
+  }
+
+  // Both over tie-break: check optional overOrder/overAt if present
+  if (stateA.overOrder !== undefined && stateB.overOrder !== undefined) {
+    if (stateA.overOrder < stateB.overOrder) return 2;
+    if (stateB.overOrder < stateA.overOrder) return 1;
+  }
+  return 1;
+}
