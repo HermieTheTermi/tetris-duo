@@ -43,7 +43,7 @@ function decodeBlob(str) {
   return JSON.parse(json);
 }
 
-function waitForIceGathering(pc, timeoutMs = 2000) {
+function waitForIceGathering(pc, timeoutMs = 3000) {
   if (pc.iceGatheringState === 'complete') {
     return Promise.resolve();
   }
@@ -57,16 +57,145 @@ function waitForIceGathering(pc, timeoutMs = 2000) {
       }
     };
     const timer = setTimeout(finish, timeoutMs);
-    pc.addEventListener('icecandidate', (event) => {
-      if (event.candidate === null) {
-        finish();
-      }
+    if (typeof pc.addEventListener === 'function') {
+      pc.addEventListener('icecandidate', (event) => {
+        if (event && event.candidate === null) {
+          finish();
+        }
+      });
+      pc.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState === 'complete') {
+          finish();
+        }
+      });
+    } else {
+      finish();
+    }
+  });
+}
+
+function uint8ArrayToBase64Url(bytes) {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(bytes).toString('base64url');
+  }
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
+
+function base64UrlToUint8Array(str) {
+  if (typeof Buffer !== 'undefined') {
+    return new Uint8Array(Buffer.from(str, 'base64url'));
+  }
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) {
+    base64 += '=';
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+export async function compressJsonToBase64Url(obj) {
+  const json = JSON.stringify(obj);
+  const cs = new CompressionStream('deflate-raw');
+  const writer = cs.writable.getWriter();
+  writer.write(new TextEncoder().encode(json));
+  writer.close();
+
+  const reader = cs.readable.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.length;
+  }
+
+  return uint8ArrayToBase64Url(merged);
+}
+
+export async function peerFromToken(token) {
+  const sanitized = sanitizeCode(token);
+  if (!sanitized) {
+    throw new Error('Invalid token');
+  }
+  const bytes = base64UrlToUint8Array(sanitized);
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  writer.write(bytes);
+  writer.close();
+
+  const reader = ds.readable.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.length;
+  }
+
+  const json = new TextDecoder().decode(merged);
+  return JSON.parse(json);
+}
+
+export async function tokenFromPeer(peer, kind) {
+  const pc = peer?.pc || (typeof peer?.createOffer === 'function' ? peer : null);
+
+  if (pc) {
+    await waitForIceGathering(pc, 3000);
+    const desc = pc.localDescription || { type: kind, sdp: '' };
+    return await compressJsonToBase64Url({
+      type: desc.type || kind,
+      sdp: desc.sdp || '',
     });
-    pc.addEventListener('icegatheringstatechange', () => {
-      if (pc.iceGatheringState === 'complete') {
-        finish();
-      }
-    });
+  }
+
+  if (peer && peer.iceGatheringState && peer.iceGatheringState !== 'complete') {
+    await waitForIceGathering(peer, 3000);
+  }
+
+  let desc = peer?.localDescription;
+  if (!desc && typeof peer?.localBlob === 'function') {
+    try {
+      desc = decodeBlob(peer.localBlob());
+    } catch (e) {
+      desc = { type: kind, sdp: '' };
+    }
+  }
+
+  if (!desc) {
+    desc = { type: kind, sdp: '' };
+  }
+
+  return await compressJsonToBase64Url({
+    type: desc.type || kind,
+    sdp: desc.sdp || '',
   });
 }
 
@@ -83,9 +212,17 @@ function createNodeMockPeer(isHost, opts = {}) {
 
   let timeoutTimer = null;
   const peer = {
+    iceGatheringState: 'complete',
+    localDescription: dummySdp,
     localBlob: () => blob,
     acceptBlob: async (str) => {
-      const parsed = decodeBlob(sanitizeCode(str));
+      const sanitized = sanitizeCode(str);
+      let parsed;
+      try {
+        parsed = await peerFromToken(sanitized);
+      } catch (e) {
+        parsed = decodeBlob(sanitized);
+      }
       return parsed;
     },
     send: (obj) => {},
@@ -124,6 +261,7 @@ export async function createHost(opts = {}) {
   let isOpen = false;
 
   const peer = {
+    pc,
     onMessage: opts.onMessage || (() => {}),
     onOpen: opts.onOpen || (() => {}),
     onClose: opts.onClose || (() => {}),
@@ -137,7 +275,13 @@ export async function createHost(opts = {}) {
     },
 
     acceptBlob: async (str) => {
-      const remote = decodeBlob(sanitizeCode(str));
+      const sanitized = sanitizeCode(str);
+      let remote;
+      try {
+        remote = await peerFromToken(sanitized);
+      } catch (e) {
+        remote = decodeBlob(sanitized);
+      }
       await pc.setRemoteDescription(new RTCSessionDescription(remote));
     },
 
@@ -193,7 +337,7 @@ export async function createHost(opts = {}) {
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  await waitForIceGathering(pc, 2500);
+  await waitForIceGathering(pc, 3000);
 
   return peer;
 }
@@ -212,6 +356,7 @@ export async function createGuest(opts = {}) {
   let isOpen = false;
 
   const peer = {
+    pc,
     onMessage: opts.onMessage || (() => {}),
     onOpen: opts.onOpen || (() => {}),
     onClose: opts.onClose || (() => {}),
@@ -225,11 +370,17 @@ export async function createGuest(opts = {}) {
     },
 
     acceptBlob: async (str) => {
-      const remote = decodeBlob(sanitizeCode(str));
+      const sanitized = sanitizeCode(str);
+      let remote;
+      try {
+        remote = await peerFromToken(sanitized);
+      } catch (e) {
+        remote = decodeBlob(sanitized);
+      }
       await pc.setRemoteDescription(new RTCSessionDescription(remote));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      await waitForIceGathering(pc, 2500);
+      await waitForIceGathering(pc, 3000);
       return peer.localBlob();
     },
 

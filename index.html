@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
   <title>Tetris Duo — 1v1 Local & WebRTC</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -21,51 +24,90 @@
 
   <!-- WebRTC Signaling Panel (Host) -->
   <section class="signaling-panel hidden" id="hostSignaling">
-    <h3>Host Online Game (Manual Signaling)</h3>
-    <div class="signaling-step">
-      <label for="hostOfferCode">1. Your Connection Code (send this to Guest):</label>
-      <div class="code-box">
-        <textarea id="hostOfferCode" class="signaling-text" readonly placeholder="Generating code..."></textarea>
-        <button class="btn" id="btnShareOffer">📤 Code teilen</button>
-        <button class="btn" id="btnCopyOffer">Copy</button>
+    <h3>Host Online Game</h3>
+    <div class="qr-pairing-box" id="hostQrBox">
+      <div class="qr-canvas-wrapper">
+        <canvas id="hostQrCanvas" class="qr-canvas" width="280" height="280"></canvas>
+      </div>
+      <p class="qr-instruction">Mit der Kamera des Gast-Handys scannen:</p>
+      <div class="qr-actions">
+        <button class="btn btn-primary" id="btnShareHostLink">🔗 Link teilen</button>
+        <button class="btn" id="btnCopyHostLink">Link kopieren</button>
       </div>
     </div>
-    <div class="signaling-step">
-      <label for="hostAnswerInput">2. Paste Guest Answer Code here:</label>
-      <div class="code-box">
-        <textarea id="hostAnswerInput" class="signaling-text" placeholder="Paste Guest answer code here..."></textarea>
-        <button class="btn" id="btnPasteAnswer">📋 Einfügen</button>
-        <button class="btn btn-primary" id="btnAcceptAnswer">Connect</button>
+
+    <!-- Manual Code Fallback -->
+    <details class="manual-code-details" id="hostManualDetails">
+      <summary>Manuelle Code-Eingabe (Fallback)</summary>
+      <div class="signaling-step">
+        <label for="hostOfferCode">1. Dein Verbindungscode (an Gast senden):</label>
+        <div class="code-box">
+          <textarea id="hostOfferCode" class="signaling-text" readonly placeholder="Generiere Code..."></textarea>
+          <button class="btn" id="btnShareOffer">📤 Code teilen</button>
+          <button class="btn" id="btnCopyOffer">Copy</button>
+        </div>
       </div>
-    </div>
+      <div class="signaling-step">
+        <label for="hostAnswerInput">2. Gast-Antwortcode hier einfügen:</label>
+        <div class="code-box">
+          <textarea id="hostAnswerInput" class="signaling-text" placeholder="Antwortcode hier einfügen..."></textarea>
+          <button class="btn" id="btnPasteAnswer">📋 Einfügen</button>
+          <button class="btn btn-primary" id="btnAcceptAnswer">Connect</button>
+        </div>
+      </div>
+    </details>
     <div>
-      <span class="status-badge waiting" id="hostStatus">Status: Waiting for Guest Answer...</span>
+      <span class="status-badge waiting" id="hostStatus">Status: Warte auf Gast-Antwort...</span>
     </div>
   </section>
 
   <!-- WebRTC Signaling Panel (Guest) -->
   <section class="signaling-panel hidden" id="guestSignaling">
-    <h3>Join Online Game (Manual Signaling)</h3>
-    <div class="signaling-step">
-      <label for="guestOfferInput">1. Paste Host Connection Code here:</label>
+    <h3>Join Online Game</h3>
+    <div class="signaling-step" id="guestManualStep">
+      <label for="guestOfferInput">1. Host Verbindungscode:</label>
       <div class="code-box">
-        <textarea id="guestOfferInput" class="signaling-text" placeholder="Paste Host offer code here..."></textarea>
+        <textarea id="guestOfferInput" class="signaling-text" placeholder="Host Verbindungscode einfügen..."></textarea>
         <button class="btn" id="btnPasteOffer">📋 Einfügen</button>
         <button class="btn btn-primary" id="btnGenerateAnswer">Generate Answer</button>
       </div>
     </div>
     <div class="signaling-step hidden" id="guestAnswerStep">
-      <label for="guestAnswerCode">2. Your Answer Code (send this back to Host):</label>
-      <div class="code-box">
-        <textarea id="guestAnswerCode" class="signaling-text" readonly></textarea>
-        <button class="btn" id="btnShareAnswer">📤 Code teilen</button>
-        <button class="btn" id="btnCopyAnswer">Copy</button>
+      <div class="qr-pairing-box" id="guestQrBox">
+        <div class="qr-canvas-wrapper">
+          <canvas id="guestQrCanvas" class="qr-canvas" width="280" height="280"></canvas>
+        </div>
+        <p class="qr-instruction">Host scannt diesen Code mit der Handy-Kamera:</p>
+        <div class="qr-actions">
+          <button class="btn btn-primary" id="btnShareGuestLink">🔗 Link teilen</button>
+          <button class="btn" id="btnCopyGuestLink">Link kopieren</button>
+        </div>
       </div>
+
+      <details class="manual-code-details" id="guestManualDetails">
+        <summary>Manuelle Code-Eingabe (Fallback)</summary>
+        <label for="guestAnswerCode">2. Dein Antwortcode (an Host senden):</label>
+        <div class="code-box">
+          <textarea id="guestAnswerCode" class="signaling-text" readonly></textarea>
+          <button class="btn" id="btnShareAnswer">📤 Code teilen</button>
+          <button class="btn" id="btnCopyAnswer">Copy</button>
+        </div>
+      </details>
     </div>
     <div>
-      <span class="status-badge waiting" id="guestStatus">Status: Waiting for Host Code...</span>
+      <span class="status-badge waiting" id="guestStatus">Status: Warte auf Host-Code...</span>
     </div>
   </section>
+
+  <!-- Tab Acknowledgment Overlay Banner -->
+  <div class="tab-ack-notice hidden" id="tabAckNotice">
+    <div class="tab-ack-modal">
+      <div class="tab-ack-icon">✅</div>
+      <h2>Antwort übernommen</h2>
+      <p>Du kannst diesen Tab schließen.</p>
+      <button class="btn btn-primary" id="btnCloseTab">Tab schließen</button>
+    </div>
+  </div>
 
   <!-- Dual Game Arenas -->
   <main class="arena" id="arena">

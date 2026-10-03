@@ -16,8 +16,13 @@ import {
   matchWinner,
 } from './engine.js';
 
-import { createHost, createGuest, sanitizeCode } from './net.js';
+import { createHost, createGuest, sanitizeCode, tokenFromPeer, peerFromToken } from './net.js';
+import { drawQR } from './qr.js';
 import { setupCanvas, renderBoard, renderPiecePreview, bindKeyboard } from './ui.js';
+
+// Connection timeout message with Client-Isolation note
+const CONNECTION_TIMEOUT_MSG =
+  'Verbindung fehlgeschlagen – Netzwerk blockiert P2P oder Hotspot hat Client-Isolation aktiv (im Gastgeber-Hotspot nachsehen)';
 
 // DOM Elements: Navigation & Modes
 const btnModeLocal = document.getElementById('btnModeLocal');
@@ -33,6 +38,9 @@ const btnShareOffer = document.getElementById('btnShareOffer');
 const btnPasteAnswer = document.getElementById('btnPasteAnswer');
 const btnAcceptAnswer = document.getElementById('btnAcceptAnswer');
 const hostStatus = document.getElementById('hostStatus');
+const hostQrCanvas = document.getElementById('hostQrCanvas');
+const btnShareHostLink = document.getElementById('btnShareHostLink');
+const btnCopyHostLink = document.getElementById('btnCopyHostLink');
 
 // Signaling: Guest
 const guestSignaling = document.getElementById('guestSignaling');
@@ -44,6 +52,17 @@ const guestAnswerCode = document.getElementById('guestAnswerCode');
 const btnShareAnswer = document.getElementById('btnShareAnswer');
 const btnCopyAnswer = document.getElementById('btnCopyAnswer');
 const guestStatus = document.getElementById('guestStatus');
+const guestQrCanvas = document.getElementById('guestQrCanvas');
+const btnShareGuestLink = document.getElementById('btnShareGuestLink');
+const btnCopyGuestLink = document.getElementById('btnCopyGuestLink');
+
+// Tab Ack Modal
+const tabAckNotice = document.getElementById('tabAckNotice');
+const btnCloseTab = document.getElementById('btnCloseTab');
+
+// URL Sharing State
+let currentHostOfferUrl = '';
+let currentGuestAnswerUrl = '';
 
 // Player Panels Header & Stats
 const nameP1 = document.getElementById('nameP1');
@@ -256,6 +275,35 @@ async function setMode(mode) {
   }
 }
 
+// BroadcastChannel for cross-tab local pairing
+let pairingChannel = null;
+if (typeof BroadcastChannel !== 'undefined') {
+  pairingChannel = new BroadcastChannel('tetris-duo');
+  pairingChannel.onmessage = async (event) => {
+    const data = event.data;
+    if (!data) return;
+
+    if (data.type === 'answer' && data.token) {
+      // Waiting host tab receives answer from newly opened scanner tab
+      if (currentMode === 'host' && peer) {
+        pairingChannel.postMessage({ type: 'answer_ack' });
+        hostAnswerInput.value = data.token;
+        hostStatus.textContent = 'Antwort empfangen! Verbinde...';
+        hostStatus.className = 'status-badge waiting';
+        try {
+          peer.startTimeout(() => {
+            hostStatus.textContent = CONNECTION_TIMEOUT_MSG;
+            hostStatus.className = 'status-badge waiting';
+          }, 15000);
+          await peer.acceptBlob(data.token);
+        } catch (err) {
+          hostStatus.textContent = 'Verbindung fehlgeschlagen: ' + err.message;
+        }
+      }
+    }
+  };
+}
+
 // Host Mode Setup
 async function initHostMode() {
   hostSignaling.classList.remove('hidden');
@@ -286,7 +334,7 @@ async function initHostMode() {
         badgeP2.textContent = 'Disconnected';
       },
       onTimeout: () => {
-        hostStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+        hostStatus.textContent = CONNECTION_TIMEOUT_MSG;
         hostStatus.className = 'status-badge waiting';
       },
       onMessage: (msg) => {
@@ -294,9 +342,17 @@ async function initHostMode() {
       },
     });
 
-    const offerBlob = peer.localBlob();
-    hostOfferCode.value = offerBlob;
-    hostStatus.textContent = 'Offer ready. Copy or share with Guest!';
+    const offerToken = await tokenFromPeer(peer, 'offer');
+    hostOfferCode.value = offerToken;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+    const offerUrl = `${origin}${pathname}#s=${offerToken}`;
+    currentHostOfferUrl = offerUrl;
+
+    if (hostQrCanvas) {
+      drawQR(hostQrCanvas, offerUrl, 280);
+    }
+    hostStatus.textContent = 'Offer bereit. QR-Code scannen oder Link teilen!';
   } catch (err) {
     hostStatus.textContent = 'Error: ' + err.message;
   }
@@ -330,6 +386,21 @@ btnShareOffer.addEventListener('click', () => {
   shareCode(hostOfferCode.value);
 });
 
+if (btnShareHostLink) {
+  btnShareHostLink.addEventListener('click', () => {
+    shareLink(currentHostOfferUrl, 'Tetris Duo — Verbindungslink');
+  });
+}
+
+if (btnCopyHostLink) {
+  btnCopyHostLink.addEventListener('click', () => {
+    if (currentHostOfferUrl) {
+      navigator.clipboard.writeText(currentHostOfferUrl);
+      showToast('Link kopiert!');
+    }
+  });
+}
+
 btnPasteAnswer.addEventListener('click', () => {
   pasteCodeInto(hostAnswerInput);
 });
@@ -346,7 +417,7 @@ btnAcceptAnswer.addEventListener('click', async () => {
 
     // 15 second timeout for DataChannel connection
     peer.startTimeout(() => {
-      hostStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+      hostStatus.textContent = CONNECTION_TIMEOUT_MSG;
       hostStatus.className = 'status-badge waiting';
     }, 15000);
 
@@ -375,8 +446,8 @@ btnPasteOffer.addEventListener('click', () => {
   pasteCodeInto(guestOfferInput);
 });
 
-btnGenerateAnswer.addEventListener('click', async () => {
-  const offer = sanitizeCode(guestOfferInput.value);
+async function generateAnswerFromOffer(offerStr) {
+  const offer = sanitizeCode(offerStr);
   if (!offer) {
     alert('Please paste the Host connection code first.');
     return;
@@ -398,7 +469,7 @@ btnGenerateAnswer.addEventListener('click', async () => {
         guestStatus.className = 'status-badge waiting';
       },
       onTimeout: () => {
-        guestStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+        guestStatus.textContent = CONNECTION_TIMEOUT_MSG;
         guestStatus.className = 'status-badge waiting';
       },
       onMessage: (msg) => {
@@ -408,18 +479,31 @@ btnGenerateAnswer.addEventListener('click', async () => {
 
     // 15 second timeout for DataChannel connection
     peer.startTimeout(() => {
-      guestStatus.textContent = 'Verbindung fehlgeschlagen – Netzwerk blockiert vermutlich P2P';
+      guestStatus.textContent = CONNECTION_TIMEOUT_MSG;
       guestStatus.className = 'status-badge waiting';
     }, 15000);
 
     await peer.acceptBlob(offer);
-    const answerBlob = peer.localBlob();
-    guestAnswerCode.value = answerBlob;
+    const answerToken = await tokenFromPeer(peer, 'answer');
+    guestAnswerCode.value = answerToken;
     guestAnswerStep.classList.remove('hidden');
-    guestStatus.textContent = 'Answer generated. Copy or share back to Host!';
+
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
+    const answerUrl = `${origin}${pathname}#a=${answerToken}`;
+    currentGuestAnswerUrl = answerUrl;
+
+    if (guestQrCanvas) {
+      drawQR(guestQrCanvas, answerUrl, 280);
+    }
+    guestStatus.textContent = 'Answer generated. Scan QR or share back to Host!';
   } catch (err) {
     guestStatus.textContent = 'Error: ' + err.message;
   }
+}
+
+btnGenerateAnswer.addEventListener('click', async () => {
+  await generateAnswerFromOffer(guestOfferInput.value);
 });
 
 btnCopyAnswer.addEventListener('click', () => {
@@ -433,6 +517,56 @@ btnCopyAnswer.addEventListener('click', () => {
 btnShareAnswer.addEventListener('click', () => {
   shareCode(guestAnswerCode.value);
 });
+
+if (btnShareGuestLink) {
+  btnShareGuestLink.addEventListener('click', () => {
+    shareLink(currentGuestAnswerUrl, 'Tetris Duo — Antwortlink');
+  });
+}
+
+if (btnCopyGuestLink) {
+  btnCopyGuestLink.addEventListener('click', () => {
+    if (currentGuestAnswerUrl) {
+      navigator.clipboard.writeText(currentGuestAnswerUrl);
+      showToast('Link kopiert!');
+    }
+  });
+}
+
+if (btnCloseTab) {
+  btnCloseTab.addEventListener('click', () => {
+    window.close();
+  });
+}
+
+async function shareLink(url, title = 'Tetris Duo') {
+  if (!url) {
+    showToast('Kein Link vorhanden');
+    return;
+  }
+  if (navigator.share) {
+    try {
+      await navigator.share({
+        title,
+        url,
+      });
+      showToast('Link geteilt!');
+      return;
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+    }
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Link in die Zwischenablage kopiert!');
+      return;
+    } catch (err) {
+      // fallback
+    }
+  }
+  showToast('Bitte manuell kopieren');
+}
 
 async function shareCode(rawCode) {
   const clean = sanitizeCode(rawCode);
@@ -812,3 +946,72 @@ setupTouchControls();
 // Start with Local Game
 initLocalGame();
 requestAnimationFrame(loop);
+
+// URL Hash Pairing Protocol
+async function checkUrlHash() {
+  if (typeof window === 'undefined') return;
+  const hash = window.location.hash;
+  if (!hash) return;
+
+  if (hash.startsWith('#s=')) {
+    const token = hash.slice(3);
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    await setMode('guest');
+    guestOfferInput.value = token;
+    await generateAnswerFromOffer(token);
+  } else if (hash.startsWith('#a=')) {
+    const token = hash.slice(3);
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+
+    if (pairingChannel) {
+      let ackReceived = false;
+      const ackHandler = (e) => {
+        if (e.data && e.data.type === 'answer_ack') {
+          ackReceived = true;
+          pairingChannel.removeEventListener('message', ackHandler);
+          showTabAckNotice();
+        }
+      };
+      pairingChannel.addEventListener('message', ackHandler);
+      pairingChannel.postMessage({ type: 'answer', token });
+
+      setTimeout(() => {
+        pairingChannel.removeEventListener('message', ackHandler);
+        if (!ackReceived) {
+          fallbackToHostAnswer(token);
+        }
+      }, 500);
+    } else {
+      fallbackToHostAnswer(token);
+    }
+  }
+}
+
+function showTabAckNotice() {
+  if (tabAckNotice) {
+    tabAckNotice.classList.remove('hidden');
+  }
+}
+
+async function fallbackToHostAnswer(token) {
+  await setMode('host');
+  hostAnswerInput.value = token;
+  hostStatus.textContent = 'Antwort übernommen. Drücke "Connect" zum Starten.';
+}
+
+// ServiceWorker Registration (Offline PWA)
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch((err) => {
+    console.warn('ServiceWorker registration failed:', err);
+  });
+}
+
+// Initial hash check and listener
+checkUrlHash();
+if (typeof window !== 'undefined') {
+  window.addEventListener('hashchange', checkUrlHash);
+}
