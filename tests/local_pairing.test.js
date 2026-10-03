@@ -173,3 +173,64 @@ test('18. Offline PWA: sw.js, manifest.json, icon.svg and client-isolation note'
   const mainJs = fs.readFileSync(mainJsPath, 'utf8');
   assert.match(mainJs, /Client-Isolation/i, 'main.js must mention Client-Isolation in connection failure / timeout message');
 });
+
+test('19. QR backing store: qrBackingSize scales with devicePixelRatio (min 2x)', () => {
+  assert.equal(typeof qr.qrBackingSize, 'function', 'qrBackingSize must be exported from src/qr.js');
+
+  // Must round and ensure minimum 2x cssSize
+  assert.equal(qr.qrBackingSize(280, 1), 560, 'qrBackingSize(280, 1) must return min 2x cssSize (560)');
+  assert.equal(qr.qrBackingSize(280, 2), 560, 'qrBackingSize(280, 2) must return 560');
+  assert.equal(qr.qrBackingSize(280, 0.5), 560, 'qrBackingSize(280, 0.5) must return min 2x cssSize (560)');
+
+  // At dpr 3, must return exactly 3x cssSize (840)
+  assert.equal(qr.qrBackingSize(280, 3), 840, 'qrBackingSize(280, 3) must return exactly 3x cssSize (840)');
+  assert.equal(qr.qrBackingSize(100, 3), 300, 'qrBackingSize(100, 3) must return 300');
+
+  // Fractional dpr rounding
+  assert.equal(qr.qrBackingSize(280, 2.5), 700, 'qrBackingSize(280, 2.5) must return 700');
+  assert.equal(qr.qrBackingSize(280, 2.625), 735, 'qrBackingSize(280, 2.625) must return 735');
+
+  // Without dpr parameter in node (window undefined), defaults to min 2x
+  assert.equal(qr.qrBackingSize(280), 560, 'qrBackingSize(280) default without dpr must be min 2x (560)');
+
+  // drawQR on canvas sets backing store width/height to scaled pixels and keeps CSS size
+  const drawCalls = [];
+  const mockCanvasDpr3 = {
+    width: 0,
+    height: 0,
+    style: {},
+    getContext: (type) => {
+      assert.equal(type, '2d');
+      return {
+        fillStyle: '',
+        fillRect: (x, y, w, h) => drawCalls.push({ x, y, w, h }),
+      };
+    },
+  };
+
+  qr.drawQR(mockCanvasDpr3, 'https://example.com/#s=test', 280, 3);
+  assert.equal(mockCanvasDpr3.width, 840, 'Canvas backing store width must be 840 at dpr 3');
+  assert.equal(mockCanvasDpr3.height, 840, 'Canvas backing store height must be 840 at dpr 3');
+  assert.equal(mockCanvasDpr3.style.width, '280px', 'Canvas CSS style.width must remain 280px');
+  assert.equal(mockCanvasDpr3.style.height, '280px', 'Canvas CSS style.height must remain 280px');
+  assert.ok(drawCalls.length > 0, 'drawQR must render QR modules to canvas');
+
+  // Verify automatic detection of window.devicePixelRatio when dpr argument is omitted
+  const prevWindow = globalThis.window;
+  try {
+    globalThis.window = { devicePixelRatio: 3 };
+    assert.equal(qr.qrBackingSize(280), 840, 'qrBackingSize must read window.devicePixelRatio when dpr is omitted');
+    const autoCanvas = {
+      width: 0,
+      height: 0,
+      style: {},
+      getContext: () => ({ fillStyle: '', fillRect: () => {} }),
+    };
+    qr.drawQR(autoCanvas, 'https://example.com/#s=test', 280);
+    assert.equal(autoCanvas.width, 840, 'drawQR must scale backing store to window.devicePixelRatio automatically');
+  } finally {
+    globalThis.window = prevWindow;
+  }
+});
+
+

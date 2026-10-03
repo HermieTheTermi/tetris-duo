@@ -2274,39 +2274,60 @@ export function getQRMatrix(text, ecc = 'M') {
 }
 
 /**
+ * Calculate canvas backing store pixel size based on CSS size and devicePixelRatio.
+ * Scales by devicePixelRatio (minimum 2x) and rounds to nearest integer.
+ * @param {number} [cssSize=280] 
+ * @param {number} [dpr] 
+ * @returns {number}
+ */
+export function qrBackingSize(cssSize = 280, dpr) {
+  const size = Math.max(1, Number(cssSize) || 280);
+  const ratio = typeof dpr === 'number' && !isNaN(dpr)
+    ? dpr
+    : (typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1);
+  return Math.round(size * Math.max(2, ratio));
+}
+
+/**
  * Draw QR Code to canvas with Error Correction M or higher, 4-module quiet zone,
- * black on white contrast, and minimum 280 CSS pixels size.
- * @param {HTMLCanvasElement|{getContext: Function, width: number, height: number}} canvas 
+ * black on white contrast, and high-DPI backing store (minimum 2x CSS size).
+ * @param {HTMLCanvasElement|{getContext: Function, width: number, height: number, style?: object}} canvas 
  * @param {string} text 
- * @param {number} size 
+ * @param {number} [size=280] 
+ * @param {number} [dpr] 
  * @returns {boolean[][]}
  */
-export function drawQR(canvas, text, size = 280) {
+export function drawQR(canvas, text, size = 280, dpr) {
   if (!text || typeof text !== 'string' || text.trim() === '') {
     throw new Error('QR text cannot be empty or invalid');
   }
-  const targetSize = Math.max(280, Number(size) || 280);
+  const cssSize = Math.max(280, Number(size) || 280);
+  const backingSize = qrBackingSize(cssSize, dpr);
   const matrix = getQRMatrix(text, 'M');
   const N = matrix.length;
 
   if (canvas) {
-    canvas.width = targetSize;
-    canvas.height = targetSize;
+    canvas.width = backingSize;
+    canvas.height = backingSize;
+    if (canvas.style) {
+      canvas.style.width = `${cssSize}px`;
+      canvas.style.height = `${cssSize}px`;
+    }
     const ctx = canvas.getContext ? canvas.getContext('2d') : null;
     if (ctx) {
       // Background: White
       ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, targetSize, targetSize);
+      ctx.fillRect(0, 0, backingSize, backingSize);
 
       // Foreground: Black modules
       ctx.fillStyle = '#000000';
       for (let r = 0; r < N; r++) {
         for (let c = 0; c < N; c++) {
           if (matrix[r][c]) {
-            const x = Math.round((c * targetSize) / N);
-            const y = Math.round((r * targetSize) / N);
-            const w = Math.round(((c + 1) * targetSize) / N) - x;
-            const h = Math.round(((r + 1) * targetSize) / N) - y;
+            const x = Math.round((c * backingSize) / N);
+            const y = Math.round((r * backingSize) / N);
+            const w = Math.round(((c + 1) * backingSize) / N) - x;
+            const h = Math.round(((r + 1) * backingSize) / N) - y;
             ctx.fillRect(x, y, w, h);
           }
         }
@@ -2316,3 +2337,4 @@ export function drawQR(canvas, text, size = 280) {
 
   return matrix;
 }
+
