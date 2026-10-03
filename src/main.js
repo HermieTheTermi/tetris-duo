@@ -19,6 +19,8 @@ import {
 import { createHost, createGuest, sanitizeCode, tokenFromPeer, peerFromToken } from './net.js';
 import { drawQR } from './qr.js';
 import { setupCanvas, renderBoard, renderPiecePreview, bindKeyboard } from './ui.js';
+import { lobbyPhase, countdownValue, applyLobbyMessage, lobbyMessageFor } from './lobby.js';
+import { makeRoomCode, roomLink, parseRoomFromHash, hostRoom, joinRoom, closeRoom } from './signal.js';
 
 // Connection timeout message with Client-Isolation note
 const CONNECTION_TIMEOUT_MSG =
@@ -31,19 +33,29 @@ const btnModeGuest = document.getElementById('btnModeGuest');
 
 // Signaling: Host
 const hostSignaling = document.getElementById('hostSignaling');
+const hostRoomCode = document.getElementById('hostRoomCode');
+const hostQrCanvas = document.getElementById('hostQrCanvas');
+const btnShareRoomLink = document.getElementById('btnShareRoomLink');
+const btnCopyRoomLink = document.getElementById('btnCopyRoomLink');
+const btnShareHostLink = document.getElementById('btnShareHostLink');
+const btnCopyHostLink = document.getElementById('btnCopyHostLink');
+const hostStatus = document.getElementById('hostStatus');
+
+// Host Manual Fallback
 const hostOfferCode = document.getElementById('hostOfferCode');
 const hostAnswerInput = document.getElementById('hostAnswerInput');
 const btnCopyOffer = document.getElementById('btnCopyOffer');
 const btnShareOffer = document.getElementById('btnShareOffer');
 const btnPasteAnswer = document.getElementById('btnPasteAnswer');
 const btnAcceptAnswer = document.getElementById('btnAcceptAnswer');
-const hostStatus = document.getElementById('hostStatus');
-const hostQrCanvas = document.getElementById('hostQrCanvas');
-const btnShareHostLink = document.getElementById('btnShareHostLink');
-const btnCopyHostLink = document.getElementById('btnCopyHostLink');
 
 // Signaling: Guest
 const guestSignaling = document.getElementById('guestSignaling');
+const inputRoomCode = document.getElementById('inputRoomCode');
+const btnJoinRoom = document.getElementById('btnJoinRoom');
+const guestStatus = document.getElementById('guestStatus');
+
+// Guest Manual Fallback
 const guestOfferInput = document.getElementById('guestOfferInput');
 const btnPasteOffer = document.getElementById('btnPasteOffer');
 const btnGenerateAnswer = document.getElementById('btnGenerateAnswer');
@@ -51,7 +63,6 @@ const guestAnswerStep = document.getElementById('guestAnswerStep');
 const guestAnswerCode = document.getElementById('guestAnswerCode');
 const btnShareAnswer = document.getElementById('btnShareAnswer');
 const btnCopyAnswer = document.getElementById('btnCopyAnswer');
-const guestStatus = document.getElementById('guestStatus');
 const guestQrCanvas = document.getElementById('guestQrCanvas');
 const btnShareGuestLink = document.getElementById('btnShareGuestLink');
 const btnCopyGuestLink = document.getElementById('btnCopyGuestLink');
@@ -60,9 +71,17 @@ const btnCopyGuestLink = document.getElementById('btnCopyGuestLink');
 const tabAckNotice = document.getElementById('tabAckNotice');
 const btnCloseTab = document.getElementById('btnCloseTab');
 
+// Start-Gate DOM Elements
+const btnReadyP1 = document.getElementById('btnReadyP1');
+const btnReadyP2 = document.getElementById('btnReadyP2');
+const countdownOverlay = document.getElementById('countdownOverlay');
+const countdownText = document.getElementById('countdownText');
+
 // URL Sharing State
 let currentHostOfferUrl = '';
 let currentGuestAnswerUrl = '';
+let currentRoomCode = '';
+let currentRoomLink = '';
 
 // Player Panels Header & Stats
 const nameP1 = document.getElementById('nameP1');
@@ -113,14 +132,21 @@ setupCanvas(holdP2, 64, 64);
 nextP1.forEach((c) => setupCanvas(c, 64, 50));
 nextP2.forEach((c) => setupCanvas(c, 64, 50));
 
-// Game State
+// Game & Connection State
 let currentMode = 'local'; // 'local' | 'host' | 'guest'
 let peer = null;
+let isPeerConnected = false;
 let state1 = null;
 let state2 = null;
 let lastTime = 0;
 let lastBroadcast = 0;
 let gameSeed = 100;
+
+// Start-Gate State
+let ready1 = false;
+let ready2 = false;
+let countdownStartedAt = null;
+let isSimulationRunning = false;
 
 // Match End State: 0 = running, 1 = P1 wins, 2 = P2 wins
 let currentMatchWinner = 0;
@@ -150,28 +176,114 @@ function hideMatchEnd() {
   }
 }
 
+function hideCountdown() {
+  if (countdownOverlay) {
+    countdownOverlay.classList.add('hidden');
+  }
+}
+
+function renderEmptyUI() {
+  renderBoard(boardP1, null, null, 0, false);
+  renderBoard(boardP2, null, null, 0, false);
+  renderPiecePreview(holdP1, null);
+  renderPiecePreview(holdP2, null);
+  nextP1.forEach((c) => renderPiecePreview(c, null));
+  nextP2.forEach((c) => renderPiecePreview(c, null));
+  if (scoreP1) scoreP1.textContent = '0';
+  if (linesP1) linesP1.textContent = '0';
+  if (levelP1) levelP1.textContent = '1';
+  if (scoreP2) scoreP2.textContent = '0';
+  if (linesP2) linesP2.textContent = '0';
+  if (levelP2) levelP2.textContent = '1';
+}
+
 function initLocalGame() {
   gameSeed += 10;
-  state1 = createState(gameSeed);
-  state2 = createState(gameSeed + 1);
+  state1 = null;
+  state2 = null;
+  ready1 = false;
+  ready2 = false;
+  countdownStartedAt = null;
+  isSimulationRunning = false;
+
   nameP1.textContent = 'Player 1';
   nameP2.textContent = 'Player 2';
-  badgeP1.textContent = 'Playing';
+  badgeP1.textContent = 'Bereit machen';
   badgeP1.className = 'status-badge';
-  badgeP2.textContent = 'Playing';
+  badgeP2.textContent = 'Bereit machen';
   badgeP2.className = 'status-badge';
+
+  btnReadyP1.disabled = false;
+  btnReadyP1.textContent = 'Bereit machen';
+  btnReadyP2.disabled = false;
+  btnReadyP2.textContent = 'Bereit machen';
+
+  hideCountdown();
   hideMatchEnd();
+  renderEmptyUI();
+}
+
+// Start-Gate Button Handlers
+btnReadyP1.addEventListener('click', () => {
+  if (currentMode === 'local') {
+    ready1 = true;
+    btnReadyP1.disabled = true;
+    btnReadyP1.textContent = 'Bereit ✓';
+    badgeP1.textContent = 'Bereit ✓';
+    checkStartGate();
+  } else if (currentMode === 'host') {
+    ready1 = true;
+    btnReadyP1.disabled = true;
+    btnReadyP1.textContent = 'Bereit ✓';
+    badgeP1.textContent = 'Bereit ✓';
+    if (peer) {
+      peer.send(lobbyMessageFor('host', true, { ready2, countdown: null }));
+    }
+    checkStartGate();
+  }
+});
+
+btnReadyP2.addEventListener('click', () => {
+  if (currentMode === 'local') {
+    ready2 = true;
+    btnReadyP2.disabled = true;
+    btnReadyP2.textContent = 'Bereit ✓';
+    badgeP2.textContent = 'Bereit ✓';
+    checkStartGate();
+  } else if (currentMode === 'guest') {
+    ready2 = true;
+    btnReadyP2.disabled = true;
+    btnReadyP2.textContent = 'Bereit ✓';
+    badgeP1.textContent = 'Bereit ✓';
+    if (peer) {
+      peer.send(lobbyMessageFor('guest', true));
+    }
+  }
+});
+
+function checkStartGate() {
+  if (ready1 && ready2 && countdownStartedAt == null) {
+    countdownStartedAt = performance.now();
+    if (countdownOverlay) {
+      countdownText.textContent = '3';
+      countdownText.classList.remove('go');
+      countdownOverlay.classList.remove('hidden');
+    }
+    if (currentMode === 'host' && peer) {
+      peer.send(lobbyMessageFor('host', true, { ready2: true, countdown: 3 }));
+    }
+  }
 }
 
 function handleInput(player, action) {
-  // If match has concluded, no board accepts inputs anymore
-  if (currentMatchWinner !== 0) return;
+  // If match not running or already concluded, ignore input
+  if (!isSimulationRunning || currentMatchWinner !== 0) return;
 
   if (currentMode === 'local') {
     const targetState = player === 1 ? state1 : state2;
     applyActionToState(targetState, action);
   } else if (currentMode === 'host') {
-    // In host mode, host player controls state1 using touch or keys
+    // In host mode, host player controls state1
     applyActionToState(state1, action);
   } else if (currentMode === 'guest') {
     // In guest mode, send input action to host
@@ -260,11 +372,14 @@ async function setMode(mode) {
   guestSignaling.classList.add('hidden');
 
   hideMatchEnd();
+  hideCountdown();
 
   if (peer) {
     peer.close();
     peer = null;
   }
+  closeRoom();
+  isPeerConnected = false;
 
   if (mode === 'local') {
     initLocalGame();
@@ -284,8 +399,7 @@ if (typeof BroadcastChannel !== 'undefined') {
     if (!data) return;
 
     if (data.type === 'answer' && data.token) {
-      // Waiting host tab receives answer from newly opened scanner tab
-      if (currentMode === 'host' && peer) {
+      if (currentMode === 'host' && peer && peer.acceptBlob) {
         pairingChannel.postMessage({ type: 'answer_ack' });
         hostAnswerInput.value = data.token;
         hostStatus.textContent = 'Antwort empfangen! Verbinde...';
@@ -304,31 +418,119 @@ if (typeof BroadcastChannel !== 'undefined') {
   };
 }
 
-// Host Mode Setup
+// Host Mode Setup (Room link primary, manual fallback)
 async function initHostMode() {
   hostSignaling.classList.remove('hidden');
-  hostOfferCode.value = 'Generating connection offer...';
-  hostStatus.textContent = 'Generating offer...';
-  hostStatus.className = 'status-badge waiting';
   nameP1.textContent = 'You (Host)';
   nameP2.textContent = 'Opponent (Guest)';
 
-  gameSeed += 10;
-  state1 = createState(gameSeed);
-  state2 = createState(gameSeed + 1);
-  hideMatchEnd();
+  state1 = null;
+  state2 = null;
+  ready1 = false;
+  ready2 = false;
+  countdownStartedAt = null;
+  isSimulationRunning = false;
+  isPeerConnected = false;
 
+  btnReadyP1.disabled = false;
+  btnReadyP1.textContent = 'Bereit machen';
+  btnReadyP2.disabled = true;
+  btnReadyP2.textContent = 'Warte auf Gast…';
+
+  badgeP1.textContent = 'Bereit machen';
+  badgeP1.className = 'status-badge';
+  badgeP2.textContent = 'Warte auf Gast…';
+  badgeP2.className = 'status-badge waiting';
+
+  hideCountdown();
+  hideMatchEnd();
+  renderEmptyUI();
+
+  // 1. Primary: Generate 6-char Room Code and Room Link
+  const code = makeRoomCode();
+  currentRoomCode = code;
+  if (hostRoomCode) {
+    hostRoomCode.textContent = code;
+  }
+  const link = roomLink(code);
+  currentRoomLink = link;
+  currentHostOfferUrl = link;
+
+  if (hostQrCanvas) {
+    drawQR(hostQrCanvas, link, 280);
+  }
+
+  hostStatus.textContent = `Raum ${code} erstellt. Link teilen oder QR scannen!`;
+  hostStatus.className = 'status-badge waiting';
+
+  // Start PeerJS Cloud Signaling
   try {
-    peer = await createHost({
+    const roomHandle = await hostRoom(code, {
+      onStatus: (msg, statusType) => {
+        hostStatus.textContent = msg;
+        hostStatus.className = `status-badge ${statusType || 'waiting'}`;
+      },
+      onPeerOpen: (peerHandle) => {
+        isPeerConnected = true;
+        peer = peerHandle || peer;
+        hostStatus.textContent = 'Gast verbunden! Bereit machen.';
+        hostStatus.className = 'status-badge connected';
+        badgeP2.textContent = 'Verbunden';
+        badgeP2.className = 'status-badge connected';
+        btnReadyP2.textContent = 'Gast nicht bereit';
+        showToast('Gast verbunden!');
+        if (peer) {
+          peer.send({ t: 'hello', name: 'Host' });
+          peer.send(lobbyMessageFor('host', ready1, { ready2, countdown: null }));
+        }
+      },
+      onMessage: (msg) => {
+        handleHostMessage(msg);
+      },
+      onClose: () => {
+        isPeerConnected = false;
+        hostStatus.textContent = 'Gast hat den Raum verlassen.';
+        hostStatus.className = 'status-badge waiting';
+        badgeP2.textContent = 'Disconnected';
+        showToast('Gast hat Verbindung getrennt.');
+      },
+      onError: (err) => {
+        isPeerConnected = false;
+        hostStatus.textContent =
+          'Raum nicht erreichbar – brauchst du Internet für den Handschlag? ' +
+          '(Manueller QR-/Code-Austausch funktioniert auch komplett offline)';
+        hostStatus.className = 'status-badge waiting';
+      },
+    });
+
+    peer = roomHandle;
+  } catch (err) {
+    hostStatus.textContent =
+      'Raum nicht erreichbar – brauchst du Internet für den Handschlag? (Manueller Weg funktioniert ohne Internet)';
+  }
+
+  // Also prepare manual fallback offer code in background if user expands details
+  initManualHostFallback();
+}
+
+async function initManualHostFallback() {
+  try {
+    hostOfferCode.value = 'Generiere manuellen Offline-Code...';
+    const manualPeer = await createHost({
       onOpen: () => {
-        hostStatus.textContent = 'Connected! Match starting.';
+        isPeerConnected = true;
+        peer = manualPeer;
+        hostStatus.textContent = 'Gast manuell verbunden! Bereit machen.';
         hostStatus.className = 'status-badge connected';
         badgeP2.textContent = 'Connected';
         badgeP2.className = 'status-badge connected';
-        showToast('Guest connected!');
+        btnReadyP2.textContent = 'Gast nicht bereit';
+        showToast('Guest connected via manual fallback!');
         peer.send({ t: 'hello', name: 'Host' });
+        peer.send(lobbyMessageFor('host', ready1, { ready2, countdown: null }));
       },
       onClose: () => {
+        isPeerConnected = false;
         hostStatus.textContent = 'Guest disconnected.';
         hostStatus.className = 'status-badge waiting';
         badgeP2.textContent = 'Disconnected';
@@ -342,35 +544,98 @@ async function initHostMode() {
       },
     });
 
-    const offerToken = await tokenFromPeer(peer, 'offer');
+    const offerToken = await tokenFromPeer(manualPeer, 'offer');
     hostOfferCode.value = offerToken;
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    const pathname = typeof window !== 'undefined' ? window.location.pathname : '';
-    const offerUrl = `${origin}${pathname}#s=${offerToken}`;
-    currentHostOfferUrl = offerUrl;
 
-    if (hostQrCanvas) {
-      drawQR(hostQrCanvas, offerUrl, 280);
-    }
-    hostStatus.textContent = 'Offer bereit. QR-Code scannen oder Link teilen!';
-  } catch (err) {
-    hostStatus.textContent = 'Error: ' + err.message;
-  }
+    // If PeerJS isn't used, manual peer can take over when answer is pasted
+    btnAcceptAnswer.onclick = async () => {
+      const answer = sanitizeCode(hostAnswerInput.value);
+      if (!answer) {
+        alert('Please paste the Guest answer code first.');
+        return;
+      }
+      try {
+        hostStatus.textContent = 'Connecting via manual code...';
+        hostStatus.className = 'status-badge waiting';
+        peer = manualPeer;
+        manualPeer.startTimeout(() => {
+          hostStatus.textContent = CONNECTION_TIMEOUT_MSG;
+          hostStatus.className = 'status-badge waiting';
+        }, 15000);
+        await manualPeer.acceptBlob(answer);
+      } catch (err) {
+        hostStatus.textContent = 'Connection failed: ' + err.message;
+      }
+    };
+  } catch (_) {}
 }
 
 function handleHostMessage(msg) {
   if (!msg || !msg.t) return;
-  if (msg.t === 'input') {
-    // Guest input simulated on state2
-    applyActionToState(state2, msg.a);
+
+  if (msg.t === 'lobby' || msg.t === 'ready') {
+    const updated = applyLobbyMessage({ connected: isPeerConnected, ready1, ready2 }, msg);
+    ready2 = !!updated.ready2;
+    btnReadyP2.textContent = ready2 ? 'Gast bereit ✓' : 'Gast nicht bereit';
+    badgeP2.textContent = ready2 ? 'Gast bereit ✓' : 'Verbunden';
+    if (ready1 && ready2 && countdownStartedAt == null) {
+      checkStartGate();
+    } else if (peer) {
+      peer.send(lobbyMessageFor('host', ready1, { ready2, countdown: null }));
+    }
+  } else if (msg.t === 'input') {
+    if (isSimulationRunning) {
+      applyActionToState(state2, msg.a);
+    }
   } else if (msg.t === 'garbage') {
     if (state1 && typeof msg.n === 'number') {
       incomingGarbage(state1, msg.n);
     }
   } else if (msg.t === 'rematch') {
-    resetMatch();
-    if (peer) peer.send({ t: 'rematch' });
-    showToast('Rematch started!');
+    resetMatchToGate();
+    if (peer) {
+      peer.send({ t: 'rematch' });
+      peer.send(lobbyMessageFor('host', false, { ready2: false, countdown: null }));
+    }
+    showToast('Rematch gestartet!');
+  }
+}
+
+// Sharing & Copying Room Link
+if (btnShareRoomLink) {
+  btnShareRoomLink.addEventListener('click', () => {
+    shareLink(currentRoomLink || currentHostOfferUrl, 'Tetris Duo — Raum-Link');
+  });
+}
+
+if (btnCopyRoomLink) {
+  btnCopyRoomLink.addEventListener('click', () => {
+    copyLink(currentRoomLink || currentHostOfferUrl);
+  });
+}
+
+if (btnShareHostLink) {
+  btnShareHostLink.addEventListener('click', () => {
+    shareLink(currentRoomLink || currentHostOfferUrl, 'Tetris Duo — Verbindungslink');
+  });
+}
+
+if (btnCopyHostLink) {
+  btnCopyHostLink.addEventListener('click', () => {
+    copyLink(currentRoomLink || currentHostOfferUrl);
+  });
+}
+
+function copyLink(url) {
+  if (!url) {
+    showToast('Kein Link vorhanden');
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url);
+    showToast('Link kopiert!');
+  } else {
+    showToast('Bitte manuell kopieren');
   }
 }
 
@@ -386,52 +651,15 @@ btnShareOffer.addEventListener('click', () => {
   shareCode(hostOfferCode.value);
 });
 
-if (btnShareHostLink) {
-  btnShareHostLink.addEventListener('click', () => {
-    shareLink(currentHostOfferUrl, 'Tetris Duo — Verbindungslink');
-  });
-}
-
-if (btnCopyHostLink) {
-  btnCopyHostLink.addEventListener('click', () => {
-    if (currentHostOfferUrl) {
-      navigator.clipboard.writeText(currentHostOfferUrl);
-      showToast('Link kopiert!');
-    }
-  });
-}
-
 btnPasteAnswer.addEventListener('click', () => {
   pasteCodeInto(hostAnswerInput);
-});
-
-btnAcceptAnswer.addEventListener('click', async () => {
-  const answer = sanitizeCode(hostAnswerInput.value);
-  if (!answer) {
-    alert('Please paste the Guest answer code first.');
-    return;
-  }
-  try {
-    hostStatus.textContent = 'Connecting...';
-    hostStatus.className = 'status-badge waiting';
-
-    // 15 second timeout for DataChannel connection
-    peer.startTimeout(() => {
-      hostStatus.textContent = CONNECTION_TIMEOUT_MSG;
-      hostStatus.className = 'status-badge waiting';
-    }, 15000);
-
-    await peer.acceptBlob(answer);
-  } catch (err) {
-    hostStatus.textContent = 'Connection failed: ' + err.message;
-  }
 });
 
 // Guest Mode Setup
 function initGuestMode() {
   guestSignaling.classList.remove('hidden');
   guestAnswerStep.classList.add('hidden');
-  guestStatus.textContent = 'Waiting for Host Code...';
+  guestStatus.textContent = 'Warte auf Raum-Code...';
   guestStatus.className = 'status-badge waiting';
   nameP1.textContent = 'You (Guest)';
   nameP2.textContent = 'Opponent (Host)';
@@ -439,7 +667,98 @@ function initGuestMode() {
   state1 = null;
   state2 = null;
   remoteGuestState = null;
+  ready1 = false;
+  ready2 = false;
+  countdownStartedAt = null;
+  isSimulationRunning = false;
+  isPeerConnected = false;
+
+  btnReadyP1.disabled = true;
+  btnReadyP1.textContent = 'Warte auf Host…';
+  btnReadyP2.disabled = false;
+  btnReadyP2.textContent = 'Bereit machen';
+
+  badgeP1.textContent = 'Warte auf Host…';
+  badgeP2.textContent = 'Nicht verbunden';
+
+  hideCountdown();
   hideMatchEnd();
+  renderEmptyUI();
+}
+
+if (btnJoinRoom) {
+  btnJoinRoom.addEventListener('click', async () => {
+    const raw = inputRoomCode ? inputRoomCode.value.trim().toUpperCase() : '';
+    if (!raw || raw.length !== 6) {
+      alert('Bitte einen 6-stelligen Raum-Code eingeben.');
+      return;
+    }
+    await joinOnlineRoom(raw);
+  });
+}
+
+if (inputRoomCode) {
+  inputRoomCode.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+      const raw = inputRoomCode.value.trim().toUpperCase();
+      if (raw && raw.length === 6) {
+        await joinOnlineRoom(raw);
+      }
+    }
+  });
+}
+
+async function joinOnlineRoom(code) {
+  currentRoomCode = code;
+  guestStatus.textContent = `Verbinde mit Raum ${code}…`;
+  guestStatus.className = 'status-badge waiting';
+
+  try {
+    let handle;
+    handle = await joinRoom(code, {
+      onStatus: (msg, statusType) => {
+        guestStatus.textContent = msg;
+        guestStatus.className = `status-badge ${statusType || 'waiting'}`;
+      },
+      onPeerOpen: (peerHandle) => {
+        isPeerConnected = true;
+        peer = peerHandle || handle;
+        guestStatus.textContent = 'Verbunden! Bereit?';
+        guestStatus.className = 'status-badge connected';
+        badgeP1.textContent = 'Bereit machen';
+        badgeP2.textContent = 'Verbunden';
+        btnReadyP1.textContent = 'Host nicht bereit';
+        showToast('Mit Host verbunden! Bereit?');
+        if (peer) {
+          peer.send({ t: 'hello', name: 'Guest' });
+          if (ready2) {
+            peer.send(lobbyMessageFor('guest', true));
+          }
+        }
+      },
+      onMessage: (msg) => {
+        handleGuestMessage(msg);
+      },
+      onClose: () => {
+        isPeerConnected = false;
+        guestStatus.textContent = 'Verbindung zum Host unterbrochen.';
+        guestStatus.className = 'status-badge waiting';
+        badgeP2.textContent = 'Disconnected';
+        showToast('Verbindung getrennt.');
+      },
+      onError: (err) => {
+        isPeerConnected = false;
+        guestStatus.textContent =
+          'Raum nicht erreichbar – brauchst du Internet für den Handschlag? ' +
+          '(Manueller QR-/Code-Austausch funktioniert auch komplett offline)';
+        guestStatus.className = 'status-badge waiting';
+      },
+    });
+    peer = handle;
+  } catch (err) {
+    guestStatus.textContent =
+      'Raum nicht erreichbar – brauchst du Internet für den Handschlag? (Manueller Weg funktioniert ohne Internet)';
+  }
 }
 
 btnPasteOffer.addEventListener('click', () => {
@@ -455,16 +774,19 @@ async function generateAnswerFromOffer(offerStr) {
   guestStatus.textContent = 'Generating answer...';
   guestStatus.className = 'status-badge waiting';
   try {
-    peer = await createGuest({
+    const manualPeer = await createGuest({
       onOpen: () => {
+        isPeerConnected = true;
+        peer = manualPeer;
         guestStatus.textContent = 'Connected to Host!';
         guestStatus.className = 'status-badge connected';
-        badgeP1.textContent = 'Connected';
-        badgeP1.className = 'status-badge connected';
+        badgeP1.textContent = 'Bereit machen';
+        badgeP2.textContent = 'Connected';
         showToast('Connected to Host!');
         peer.send({ t: 'hello', name: 'Guest' });
       },
       onClose: () => {
+        isPeerConnected = false;
         guestStatus.textContent = 'Disconnected from Host.';
         guestStatus.className = 'status-badge waiting';
       },
@@ -477,14 +799,13 @@ async function generateAnswerFromOffer(offerStr) {
       },
     });
 
-    // 15 second timeout for DataChannel connection
-    peer.startTimeout(() => {
+    manualPeer.startTimeout(() => {
       guestStatus.textContent = CONNECTION_TIMEOUT_MSG;
       guestStatus.className = 'status-badge waiting';
     }, 15000);
 
-    await peer.acceptBlob(offer);
-    const answerToken = await tokenFromPeer(peer, 'answer');
+    await manualPeer.acceptBlob(offer);
+    const answerToken = await tokenFromPeer(manualPeer, 'answer');
     guestAnswerCode.value = answerToken;
     guestAnswerStep.classList.remove('hidden');
 
@@ -584,7 +905,6 @@ async function shareCode(rawCode) {
       return;
     } catch (err) {
       if (err.name === 'AbortError') return;
-      // Fallback to clipboard if share was rejected
     }
   }
   if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -620,8 +940,35 @@ async function pasteCodeInto(targetInput) {
 
 function handleGuestMessage(msg) {
   if (!msg || !msg.t) return;
-  if (msg.t === 'state') {
-    // Receive state stream from host
+
+  if (msg.t === 'lobby' || msg.t === 'ready') {
+    const updated = applyLobbyMessage({ connected: isPeerConnected, ready1, ready2 }, msg);
+    ready1 = !!updated.ready1;
+    btnReadyP1.textContent = ready1 ? 'Host bereit ✓' : 'Host nicht bereit';
+    badgeP2.textContent = ready1 ? 'Host bereit ✓' : 'Verbunden';
+
+    if (msg.countdown !== null && msg.countdown !== undefined) {
+      countdownOverlay.classList.remove('hidden');
+      if (msg.countdown === 0) {
+        countdownText.textContent = 'GO!';
+        countdownText.classList.add('go');
+      } else {
+        countdownText.textContent = String(msg.countdown);
+        countdownText.classList.remove('go');
+      }
+    } else {
+      countdownOverlay.classList.add('hidden');
+    }
+
+    if (msg.started) {
+      isSimulationRunning = true;
+      countdownOverlay.classList.add('hidden');
+      badgeP1.textContent = 'Playing';
+      badgeP2.textContent = 'Playing';
+    }
+  } else if (msg.t === 'state') {
+    isSimulationRunning = true;
+    countdownOverlay.classList.add('hidden');
     remoteGuestState = msg;
 
     // Check match end from streamed host state
@@ -637,8 +984,8 @@ function handleGuestMessage(msg) {
   } else if (msg.t === 'garbage') {
     showToast(`Incoming Garbage: +${msg.n} lines!`);
   } else if (msg.t === 'rematch') {
-    hideMatchEnd();
-    showToast('Rematch gestartet!');
+    resetGuestToLobby();
+    showToast('Rematch gestartet! Bereit machen.');
   }
 }
 
@@ -646,14 +993,20 @@ function handleGuestMessage(msg) {
 function triggerRematch() {
   if (currentMode === 'local') {
     initLocalGame();
-    showToast('Game restarted!');
+    showToast('Neues Spiel im Start-Gate!');
   } else if (currentMode === 'host') {
-    resetMatch();
-    if (peer) peer.send({ t: 'rematch' });
-    showToast('Rematch started!');
+    resetMatchToGate();
+    if (peer) {
+      peer.send({ t: 'rematch' });
+      peer.send(lobbyMessageFor('host', false, { ready2: false, countdown: null }));
+    }
+    showToast('Rematch gestartet! Bereit machen.');
   } else if (currentMode === 'guest') {
-    if (peer) peer.send({ t: 'rematch' });
-    showToast('Rematch requested!');
+    if (peer) {
+      peer.send({ t: 'rematch' });
+    }
+    resetGuestToLobby();
+    showToast('Rematch angefragt!');
   }
 }
 
@@ -662,15 +1015,52 @@ if (btnOverlayRematch) {
   btnOverlayRematch.addEventListener('click', triggerRematch);
 }
 
-function resetMatch() {
+function resetMatchToGate() {
   gameSeed += 10;
-  state1 = createState(gameSeed);
-  state2 = createState(gameSeed + 1);
-  badgeP1.textContent = 'Playing';
+  state1 = null;
+  state2 = null;
+  ready1 = false;
+  ready2 = false;
+  countdownStartedAt = null;
+  isSimulationRunning = false;
+
+  btnReadyP1.disabled = false;
+  btnReadyP1.textContent = 'Bereit machen';
+  btnReadyP2.disabled = true;
+  btnReadyP2.textContent = isPeerConnected ? 'Gast nicht bereit' : 'Warte auf Gast…';
+
+  badgeP1.textContent = 'Bereit machen';
   badgeP1.className = 'status-badge';
-  badgeP2.textContent = 'Playing';
-  badgeP2.className = 'status-badge';
+  badgeP2.textContent = isPeerConnected ? 'Verbunden' : 'Warte auf Gast…';
+  badgeP2.className = 'status-badge ' + (isPeerConnected ? 'connected' : 'waiting');
+
+  hideCountdown();
   hideMatchEnd();
+  renderEmptyUI();
+}
+
+function resetGuestToLobby() {
+  remoteGuestState = null;
+  state1 = null;
+  state2 = null;
+  ready1 = false;
+  ready2 = false;
+  countdownStartedAt = null;
+  isSimulationRunning = false;
+
+  btnReadyP1.disabled = true;
+  btnReadyP1.textContent = 'Host nicht bereit';
+  btnReadyP2.disabled = false;
+  btnReadyP2.textContent = 'Bereit machen';
+
+  badgeP1.textContent = 'Bereit machen';
+  badgeP1.className = 'status-badge';
+  badgeP2.textContent = isPeerConnected ? 'Verbunden' : 'Nicht verbunden';
+  badgeP2.className = 'status-badge ' + (isPeerConnected ? 'connected' : 'waiting');
+
+  hideCountdown();
+  hideMatchEnd();
+  renderEmptyUI();
 }
 
 // Touch Controls Setup
@@ -705,7 +1095,7 @@ function setupTouchControls() {
 
     const startAction = (e) => {
       e.preventDefault();
-      if (isPressed || currentMatchWinner !== 0) return;
+      if (isPressed || currentMatchWinner !== 0 || !isSimulationRunning) return;
       isPressed = true;
       btn.classList.add('pressed');
 
@@ -715,7 +1105,7 @@ function setupTouchControls() {
       if (repeat) {
         dasTimer = setTimeout(() => {
           repeatTimer = setInterval(() => {
-            if (isPressed && currentMatchWinner === 0) {
+            if (isPressed && currentMatchWinner === 0 && isSimulationRunning) {
               handleInput(1, action);
             } else {
               stopRepeat();
@@ -740,7 +1130,39 @@ function loop(timestamp) {
   lastTime = timestamp;
 
   if (currentMode === 'local') {
-    if (currentMatchWinner === 0) {
+    // Check countdown progression in local start gate
+    if (!isSimulationRunning && countdownStartedAt != null) {
+      const now = performance.now();
+      const val = countdownValue(countdownStartedAt, now);
+      if (val === 0) {
+        countdownText.textContent = 'GO!';
+        countdownText.classList.add('go');
+      } else {
+        countdownText.textContent = String(val);
+        countdownText.classList.remove('go');
+      }
+      countdownOverlay.classList.remove('hidden');
+
+      const phase = lobbyPhase({
+        connected: true,
+        ready1,
+        ready2,
+        countdownStartedAt,
+        now,
+      });
+
+      if (phase === 'playing') {
+        isSimulationRunning = true;
+        countdownOverlay.classList.add('hidden');
+        gameSeed += 10;
+        state1 = createState(gameSeed);
+        state2 = createState(gameSeed + 1);
+        badgeP1.textContent = 'Playing';
+        badgeP2.textContent = 'Playing';
+      }
+    }
+
+    if (isSimulationRunning && currentMatchWinner === 0) {
       if (state1 && !state1.over) {
         const ev1 = tick(state1, dt);
         for (const ev of ev1) {
@@ -769,7 +1191,48 @@ function loop(timestamp) {
 
     renderLocalUI();
   } else if (currentMode === 'host') {
-    if (currentMatchWinner === 0) {
+    // Check countdown progression in host start gate
+    if (!isSimulationRunning && countdownStartedAt != null) {
+      const now = performance.now();
+      const val = countdownValue(countdownStartedAt, now);
+      if (val === 0) {
+        countdownText.textContent = 'GO!';
+        countdownText.classList.add('go');
+      } else {
+        countdownText.textContent = String(val);
+        countdownText.classList.remove('go');
+      }
+      countdownOverlay.classList.remove('hidden');
+
+      // Stream countdown to guest
+      if (peer && timestamp - lastBroadcast >= 50) {
+        lastBroadcast = timestamp;
+        peer.send(lobbyMessageFor('host', true, { ready2: true, countdown: val }));
+      }
+
+      const phase = lobbyPhase({
+        connected: isPeerConnected,
+        ready1,
+        ready2,
+        countdownStartedAt,
+        now,
+      });
+
+      if (phase === 'playing') {
+        isSimulationRunning = true;
+        countdownOverlay.classList.add('hidden');
+        gameSeed += 10;
+        state1 = createState(gameSeed);
+        state2 = createState(gameSeed + 1);
+        badgeP1.textContent = 'Playing';
+        badgeP2.textContent = 'Playing';
+        if (peer) {
+          peer.send(lobbyMessageFor('host', true, { ready2: true, countdown: null, started: true }));
+        }
+      }
+    }
+
+    if (isSimulationRunning && currentMatchWinner === 0) {
       if (state1 && !state1.over) {
         const ev1 = tick(state1, dt);
         for (const ev of ev1) {
@@ -803,7 +1266,7 @@ function loop(timestamp) {
     }
 
     // Stream state to guest: <= 20 messages per second (50ms interval)
-    if (peer && timestamp - lastBroadcast >= 50 && state2) {
+    if (isSimulationRunning && peer && timestamp - lastBroadcast >= 50 && state2) {
       lastBroadcast = timestamp;
       peer.send({
         t: 'state',
@@ -852,6 +1315,8 @@ function renderLocalUI() {
     linesP1.textContent = state1.lines;
     levelP1.textContent = state1.level;
     if (state1.over) badgeP1.textContent = 'Game Over';
+  } else {
+    renderBoard(boardP1, null, null, 0, false);
   }
 
   if (state2) {
@@ -864,6 +1329,8 @@ function renderLocalUI() {
     linesP2.textContent = state2.lines;
     levelP2.textContent = state2.level;
     if (state2.over) badgeP2.textContent = 'Game Over';
+  } else {
+    renderBoard(boardP2, null, null, 0, false);
   }
 }
 
@@ -878,6 +1345,8 @@ function renderHostUI() {
     linesP1.textContent = state1.lines;
     levelP1.textContent = state1.level;
     if (state1.over) badgeP1.textContent = 'Game Over';
+  } else {
+    renderBoard(boardP1, null, null, 0, false);
   }
 
   if (state2) {
@@ -890,6 +1359,8 @@ function renderHostUI() {
     linesP2.textContent = state2.lines;
     levelP2.textContent = state2.level;
     if (state2.over) badgeP2.textContent = 'Game Over';
+  } else {
+    renderBoard(boardP2, null, null, 0, false);
   }
 }
 
@@ -932,6 +1403,9 @@ function renderGuestUI() {
       levelP2.textContent = remoteGuestState.oppLevel ?? 1;
       if (remoteGuestState.oppOver) badgeP2.textContent = 'Game Over';
     }
+  } else {
+    renderBoard(boardP1, null, null, 0, false);
+    renderBoard(boardP2, null, null, 0, false);
   }
 }
 
@@ -943,7 +1417,7 @@ bindKeyboard((player, action) => {
 // Initialize Touch Controls
 setupTouchControls();
 
-// Start with Local Game
+// Start with Local Game in Start-Gate
 initLocalGame();
 requestAnimationFrame(loop);
 
@@ -953,6 +1427,19 @@ async function checkUrlHash() {
   const hash = window.location.hash;
   if (!hash) return;
 
+  // 1. Room Code Hash: #r=ABC123
+  const roomCode = parseRoomFromHash(hash);
+  if (roomCode) {
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    await setMode('guest');
+    if (inputRoomCode) inputRoomCode.value = roomCode;
+    await joinOnlineRoom(roomCode);
+    return;
+  }
+
+  // 2. Legacy Manual Offer Hash: #s=token
   if (hash.startsWith('#s=')) {
     const token = hash.slice(3);
     if (window.history && window.history.replaceState) {
@@ -961,7 +1448,11 @@ async function checkUrlHash() {
     await setMode('guest');
     guestOfferInput.value = token;
     await generateAnswerFromOffer(token);
-  } else if (hash.startsWith('#a=')) {
+    return;
+  }
+
+  // 3. Legacy Manual Answer Hash: #a=token
+  if (hash.startsWith('#a=')) {
     const token = hash.slice(3);
     if (window.history && window.history.replaceState) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);

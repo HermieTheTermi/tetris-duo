@@ -8,6 +8,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <script src="vendor/peerjs.min.js"></script>
 </head>
 <body>
   <header>
@@ -25,20 +26,29 @@
   <!-- WebRTC Signaling Panel (Host) -->
   <section class="signaling-panel hidden" id="hostSignaling">
     <h3>Host Online Game</h3>
-    <div class="qr-pairing-box" id="hostQrBox">
+
+    <!-- Room Link Pairing (Chunk D Primary) -->
+    <div class="room-pairing-box" id="hostRoomBox">
+      <div class="room-code-badge" id="hostRoomCodeDisplay">
+        <span class="room-label">Raum-Code:</span>
+        <span id="hostRoomCode" class="room-code-text">------</span>
+      </div>
       <div class="qr-canvas-wrapper">
         <canvas id="hostQrCanvas" class="qr-canvas" width="280" height="280"></canvas>
       </div>
       <p class="qr-instruction">Mit der Kamera des Gast-Handys scannen:</p>
       <div class="qr-actions">
-        <button class="btn btn-primary" id="btnShareHostLink">🔗 Link teilen</button>
-        <button class="btn" id="btnCopyHostLink">Link kopieren</button>
+        <button class="btn btn-primary" id="btnShareRoomLink">🔗 Link teilen</button>
+        <button class="btn" id="btnCopyRoomLink">Link kopieren</button>
+        <!-- Legacy IDs preserved for backward compatibility -->
+        <button class="btn hidden" id="btnShareHostLink" style="display:none"></button>
+        <button class="btn hidden" id="btnCopyHostLink" style="display:none"></button>
       </div>
     </div>
 
     <!-- Manual Code Fallback -->
     <details class="manual-code-details" id="hostManualDetails">
-      <summary>Manuelle Code-Eingabe (Fallback)</summary>
+      <summary>Ohne Internet / manuell (Fallback)</summary>
       <div class="signaling-step">
         <label for="hostOfferCode">1. Dein Verbindungscode (an Gast senden):</label>
         <div class="code-box">
@@ -64,36 +74,46 @@
   <!-- WebRTC Signaling Panel (Guest) -->
   <section class="signaling-panel hidden" id="guestSignaling">
     <h3>Join Online Game</h3>
-    <div class="signaling-step" id="guestManualStep">
-      <label for="guestOfferInput">1. Host Verbindungscode:</label>
-      <div class="code-box">
-        <textarea id="guestOfferInput" class="signaling-text" placeholder="Host Verbindungscode einfügen..."></textarea>
-        <button class="btn" id="btnPasteOffer">📋 Einfügen</button>
-        <button class="btn btn-primary" id="btnGenerateAnswer">Generate Answer</button>
+
+    <!-- Room Join Input (Chunk D Primary) -->
+    <div class="room-pairing-box" id="guestRoomBox">
+      <div class="code-box room-join-group">
+        <input type="text" id="inputRoomCode" class="room-code-input" placeholder="Raum-Code (6 Zeichen)" maxlength="6" autocomplete="off" autocorrect="off" autocapitalize="characters" />
+        <button class="btn btn-primary" id="btnJoinRoom">Beitreten</button>
       </div>
     </div>
-    <div class="signaling-step hidden" id="guestAnswerStep">
-      <div class="qr-pairing-box" id="guestQrBox">
-        <div class="qr-canvas-wrapper">
-          <canvas id="guestQrCanvas" class="qr-canvas" width="280" height="280"></canvas>
-        </div>
-        <p class="qr-instruction">Host scannt diesen Code mit der Handy-Kamera:</p>
-        <div class="qr-actions">
-          <button class="btn btn-primary" id="btnShareGuestLink">🔗 Link teilen</button>
-          <button class="btn" id="btnCopyGuestLink">Link kopieren</button>
+
+    <!-- Manual Code Fallback -->
+    <details class="manual-code-details" id="guestManualDetails">
+      <summary>Ohne Internet / manuell (Fallback)</summary>
+      <div class="signaling-step" id="guestManualStep">
+        <label for="guestOfferInput">1. Host Verbindungscode:</label>
+        <div class="code-box">
+          <textarea id="guestOfferInput" class="signaling-text" placeholder="Host Verbindungscode einfügen..."></textarea>
+          <button class="btn" id="btnPasteOffer">📋 Einfügen</button>
+          <button class="btn btn-primary" id="btnGenerateAnswer">Generate Answer</button>
         </div>
       </div>
+      <div class="signaling-step hidden" id="guestAnswerStep">
+        <div class="qr-pairing-box" id="guestQrBox">
+          <div class="qr-canvas-wrapper">
+            <canvas id="guestQrCanvas" class="qr-canvas" width="280" height="280"></canvas>
+          </div>
+          <p class="qr-instruction">Host scannt diesen Code mit der Handy-Kamera:</p>
+          <div class="qr-actions">
+            <button class="btn btn-primary" id="btnShareGuestLink">🔗 Link teilen</button>
+            <button class="btn" id="btnCopyGuestLink">Link kopieren</button>
+          </div>
+        </div>
 
-      <details class="manual-code-details" id="guestManualDetails">
-        <summary>Manuelle Code-Eingabe (Fallback)</summary>
         <label for="guestAnswerCode">2. Dein Antwortcode (an Host senden):</label>
         <div class="code-box">
           <textarea id="guestAnswerCode" class="signaling-text" readonly></textarea>
           <button class="btn" id="btnShareAnswer">📤 Code teilen</button>
           <button class="btn" id="btnCopyAnswer">Copy</button>
         </div>
-      </details>
-    </div>
+      </div>
+    </details>
     <div>
       <span class="status-badge waiting" id="guestStatus">Status: Warte auf Host-Code...</span>
     </div>
@@ -109,6 +129,13 @@
     </div>
   </div>
 
+  <!-- Countdown Overlay (Start-Gate) -->
+  <div class="countdown-overlay hidden" id="countdownOverlay">
+    <div class="countdown-content">
+      <div class="countdown-num" id="countdownText">3</div>
+    </div>
+  </div>
+
   <!-- Dual Game Arenas -->
   <main class="arena" id="arena">
     <!-- Player 1 Panel -->
@@ -116,6 +143,9 @@
       <div class="player-header">
         <span class="player-name" id="nameP1">Player 1</span>
         <span class="status-badge" id="badgeP1">Playing</span>
+      </div>
+      <div class="ready-bar" id="readyBarP1">
+        <button class="btn btn-ready" id="btnReadyP1">Bereit machen</button>
       </div>
       <div class="board-container">
         <!-- Left Column: Hold & Stats -->
@@ -158,6 +188,9 @@
       <div class="player-header">
         <span class="player-name" id="nameP2">Player 2</span>
         <span class="status-badge" id="badgeP2">Playing</span>
+      </div>
+      <div class="ready-bar" id="readyBarP2">
+        <button class="btn btn-ready" id="btnReadyP2">Bereit machen</button>
       </div>
       <div class="board-container">
         <!-- Left Column: Hold & Stats -->

@@ -1,5 +1,5 @@
 // Service Worker for Tetris Duo (Offline PWA)
-const CACHE_NAME = 'tetris-duo-v1';
+const CACHE_NAME = 'tetris-duo-v2';
 
 const ASSETS = [
   './',
@@ -10,6 +10,9 @@ const ASSETS = [
   './src/net.js',
   './src/ui.js',
   './src/qr.js',
+  './src/lobby.js',
+  './src/signal.js',
+  './vendor/peerjs.min.js',
   './manifest.json',
   './icon.svg',
 ];

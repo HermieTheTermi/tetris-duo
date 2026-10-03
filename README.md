@@ -130,3 +130,15 @@ node --test tests/
 - **Game Over:** Kollision beim Spawnen beendet das Spiel deterministisch.
 - **Determinismus:** Identischer Seed und identische Eingabesequenz erzeugen bitgenau identische Board-Matrizen und Punktestände.
 - **Hold-Mechanik:** Stein tauschen und Verriegelung bis zum nächsten Lock.
+- **Start-Gate & Phasen:** Bereit-Buttons (`#btnReadyP1`, `#btnReadyP2`), Countdown (3, 2, 1, GO) und Phasenübergänge (`src/lobby.js`).
+- **Raum-Link & Codes:** 6-stellige verwechslungssichere Codes (`src/signal.js`), automatisches Verbinden über `#r=<CODE>`.
+
+---
+
+## Vendored Bibliotheken & Lizenzen
+
+- **PeerJS v1.5.5:** `vendor/peerjs.min.js`
+  - Lizenz: **MIT License**
+  - Zweck: Peer-to-Peer WebRTC Signaling für direkte Raum-Links (`#r=<CODE>`)
+  - Kein CDN zur Laufzeit: Die Bibliothek ist vollständig lokal vendored und wird im ServiceWorker gecacht.
+

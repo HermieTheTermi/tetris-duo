@@ -2,4 +2,6 @@
 .tetris_task_mobile.md
 .tetris_task_local.md
 .tetris_task_qrfix.md
+.tetris_task_room.md
+.tetris_task_lobbyfix.md
 node_modules/

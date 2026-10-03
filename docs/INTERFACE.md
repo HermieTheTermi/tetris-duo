@@ -112,3 +112,41 @@ not required.
 - The dying player's board freezes; the winner's board stops accepting input too (match decided).
 - Unit tests must cover: running match → 0, A over → 2, B over → 1, both over → 1 (first one wins /
   documented tie-break), and that `matchWinner` has no side effects.
+
+## Start-Gate (Chunk D)
+
+- Neither board drops a piece until both players have confirmed readiness.
+- Readiness buttons `#btnReadyP1` and `#btnReadyP2` (local: both; host/guest: own player).
+  Buttons show "Bereit ✓" and become disabled when ready.
+- Once both ready: countdown 3 – 2 – 1 – GO! (each ~1 s, overlay), then simulation starts.
+- Host runs and streams countdown via `{t:'lobby', ready1, ready2, countdown}`. Guest never starts
+  simulation on its own.
+- Rematch returns to Start-Gate with empty and still boards.
+
+## lobby.js — pure state logic
+
+```js
+export function lobbyPhase({ connected, ready1, ready2, countdownStartedAt, now })
+// -> 'idle' | 'waiting' | 'lobby' | 'countdown' | 'playing'
+export function countdownValue(countdownStartedAt, now) // 3 | 2 | 1 | 0 ('GO')
+```
+
+## signal.js — room link pairing & vendored PeerJS
+
+```js
+export function makeRoomCode()            // 6 chars from safe alphabet (no O/0/I/1)
+export function roomLink(code, baseUrl)   // -> '<baseUrl>#r=<CODE>'
+export function parseRoomFromHash(hash)   // '#r=ABC123' -> 'ABC123' | null
+export async function hostRoom(code, handlers)
+export async function joinRoom(code, handlers)
+export function closeRoom()
+```
+
+Vendored library: `vendor/peerjs.min.js` (PeerJS v1.5.5, MIT License).
+Room links format: `#r=<CODE>`. When a guest navigates to a room link, pairing is automatic without
+requiring manual code copying. Manual QR/SDP pairing (`#s=`, `#a=`) remains preserved as offline fallback.
+
+Message protocol additions:
+- host -> guest: `{t:'lobby', ready1:boolean, ready2:boolean, countdown:number|null, started?:boolean}`
+- guest -> host: `{t:'ready', ready:boolean}`
+
