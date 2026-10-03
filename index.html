@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tetris Duo — 1v1 Local & WebRTC</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Tetris Duo</h1>
+    <p class="subtitle">Two-Player Tetris • Local & P2P WebRTC (No Server)</p>
+  </header>
+
+  <!-- Mode Selector Menu -->
+  <nav class="mode-selector" id="modeSelector">
+    <button class="btn active" id="btnModeLocal">👥 Local Duo</button>
+    <button class="btn" id="btnModeHost">📡 Host Online</button>
+    <button class="btn" id="btnModeGuest">🔗 Join Online</button>
+  </nav>
+
+  <!-- WebRTC Signaling Panel (Host) -->
+  <section class="signaling-panel hidden" id="hostSignaling">
+    <h3>Host Online Game (Manual Signaling)</h3>
+    <div class="signaling-step">
+      <label for="hostOfferCode">1. Your Connection Code (send this to Guest):</label>
+      <div class="code-box">
+        <textarea id="hostOfferCode" class="signaling-text" readonly placeholder="Generating code..."></textarea>
+        <button class="btn" id="btnCopyOffer">Copy</button>
+      </div>
+    </div>
+    <div class="signaling-step">
+      <label for="hostAnswerInput">2. Paste Guest Answer Code here:</label>
+      <div class="code-box">
+        <textarea id="hostAnswerInput" class="signaling-text" placeholder="Paste Guest answer code here..."></textarea>
+        <button class="btn btn-primary" id="btnAcceptAnswer">Connect</button>
+      </div>
+    </div>
+    <div>
+      <span class="status-badge waiting" id="hostStatus">Status: Waiting for Guest Answer...</span>
+    </div>
+  </section>
+
+  <!-- WebRTC Signaling Panel (Guest) -->
+  <section class="signaling-panel hidden" id="guestSignaling">
+    <h3>Join Online Game (Manual Signaling)</h3>
+    <div class="signaling-step">
+      <label for="guestOfferInput">1. Paste Host Connection Code here:</label>
+      <div class="code-box">
+        <textarea id="guestOfferInput" class="signaling-text" placeholder="Paste Host offer code here..."></textarea>
+        <button class="btn btn-primary" id="btnGenerateAnswer">Generate Answer</button>
+      </div>
+    </div>
+    <div class="signaling-step hidden" id="guestAnswerStep">
+      <label for="guestAnswerCode">2. Your Answer Code (send this back to Host):</label>
+      <div class="code-box">
+        <textarea id="guestAnswerCode" class="signaling-text" readonly></textarea>
+        <button class="btn" id="btnCopyAnswer">Copy</button>
+      </div>
+    </div>
+    <div>
+      <span class="status-badge waiting" id="guestStatus">Status: Waiting for Host Code...</span>
+    </div>
+  </section>
+
+  <!-- Dual Game Arenas -->
+  <main class="arena" id="arena">
+    <!-- Player 1 Panel -->
+    <div class="player-panel" id="panelP1">
+      <div class="player-header">
+        <span class="player-name" id="nameP1">Player 1</span>
+        <span class="status-badge" id="badgeP1">Playing</span>
+      </div>
+      <div class="board-container">
+        <!-- Left Column: Hold & Stats -->
+        <div class="side-col">
+          <div class="stat-box">
+            <div class="stat-label">Hold</div>
+            <canvas id="holdCanvasP1" class="preview-canvas" width="64" height="64"></canvas>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Score</div>
+            <div class="stat-val" id="scoreP1">0</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Lines</div>
+            <div class="stat-val" id="linesP1">0</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Level</div>
+            <div class="stat-val" id="levelP1">1</div>
+          </div>
+        </div>
+
+        <!-- Center: Game Board -->
+        <canvas id="boardP1" class="board-canvas" width="240" height="480"></canvas>
+
+        <!-- Right Column: Next Queue -->
+        <div class="side-col">
+          <div class="stat-box">
+            <div class="stat-label">Next</div>
+            <canvas id="next1CanvasP1" class="preview-canvas" width="64" height="50"></canvas>
+            <canvas id="next2CanvasP1" class="preview-canvas" width="64" height="50"></canvas>
+            <canvas id="next3CanvasP1" class="preview-canvas" width="64" height="50"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Player 2 Panel -->
+    <div class="player-panel" id="panelP2">
+      <div class="player-header">
+        <span class="player-name" id="nameP2">Player 2</span>
+        <span class="status-badge" id="badgeP2">Playing</span>
+      </div>
+      <div class="board-container">
+        <!-- Left Column: Hold & Stats -->
+        <div class="side-col">
+          <div class="stat-box">
+            <div class="stat-label">Hold</div>
+            <canvas id="holdCanvasP2" class="preview-canvas" width="64" height="64"></canvas>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Score</div>
+            <div class="stat-val" id="scoreP2">0</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Lines</div>
+            <div class="stat-val" id="linesP2">0</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Level</div>
+            <div class="stat-val" id="levelP2">1</div>
+          </div>
+        </div>
+
+        <!-- Center: Game Board -->
+        <canvas id="boardP2" class="board-canvas" width="240" height="480"></canvas>
+
+        <!-- Right Column: Next Queue -->
+        <div class="side-col">
+          <div class="stat-box">
+            <div class="stat-label">Next</div>
+            <canvas id="next1CanvasP2" class="preview-canvas" width="64" height="50"></canvas>
+            <canvas id="next2CanvasP2" class="preview-canvas" width="64" height="50"></canvas>
+            <canvas id="next3CanvasP2" class="preview-canvas" width="64" height="50"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Action Bar -->
+  <div class="actions-bar">
+    <button class="btn btn-success" id="btnRematch">🔄 Rematch</button>
+  </div>
+
+  <!-- Keyboard Controls Guide -->
+  <section class="controls-guide">
+    <h4>Keyboard Controls</h4>
+    <div class="key-grids">
+      <div>
+        <strong style="display:block; margin-bottom:0.5rem; color:#f8fafc;">Player 1 (Left)</strong>
+        <ul class="key-list">
+          <li><span>Move Left / Right</span> <span><kbd>A</kbd> / <kbd>D</kbd></span></li>
+          <li><span>Rotate CW / CCW</span> <span><kbd>W</kbd> / <kbd>Q</kbd></span></li>
+          <li><span>Soft Drop</span> <span><kbd>S</kbd></span></li>
+          <li><span>Hard Drop</span> <span><kbd>Space</kbd></span></li>
+          <li><span>Hold Piece</span> <span><kbd>Shift</kbd></span></li>
+        </ul>
+      </div>
+      <div>
+        <strong style="display:block; margin-bottom:0.5rem; color:#f8fafc;">Player 2 (Right) / Guest</strong>
+        <ul class="key-list">
+          <li><span>Move Left / Right</span> <span><kbd>←</kbd> / <kbd>→</kbd></span></li>
+          <li><span>Rotate CW / CCW</span> <span><kbd>↑</kbd> / <kbd>,</kbd></span></li>
+          <li><span>Soft Drop</span> <span><kbd>↓</kbd></span></li>
+          <li><span>Hard Drop</span> <span><kbd>.</kbd></span></li>
+          <li><span>Hold Piece</span> <span><kbd>/</kbd></span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Notification Toast -->
+  <div class="toast" id="toast">Copied to clipboard!</div>
+
+  <!-- Entry Script -->
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
